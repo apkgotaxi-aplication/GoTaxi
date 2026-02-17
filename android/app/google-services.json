@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "553112177666",
+    "project_id": "gotaxi-df095",
+    "storage_bucket": "gotaxi-df095.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:553112177666:android:c8a062f0dbf2fc69abeb1b",
+        "android_client_info": {
+          "package_name": "com.example.gotaxi"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD4Be3nxv0xyFO8OramYhlB9P49tBohm80"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
