@@ -11,11 +11,24 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _nombreController = TextEditingController();
+  final _apellidosController = TextEditingController();
+  final _telefonoController = TextEditingController();
 
   bool _isLogin = true;
   bool _loading = false;
 
   Future<void> _submit() async {
+    if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
+      _showError('Por favor, rellena todos los campos');
+      return;
+    }
+
+    if (!_isLogin &&
+        (_nombreController.text.isEmpty || _apellidosController.text.isEmpty)) {
+      _showError('Nombre y apellidos son obligatorios para el registro');
+      return;
+    }
     setState(() => _loading = true);
 
     try {
@@ -28,15 +41,21 @@ class _AuthScreenState extends State<AuthScreen> {
         await Supabase.instance.client.auth.signUp(
           email: _emailController.text.trim(),
           password: _passwordController.text.trim(),
+          data: {
+            'nombre': _nombreController.text.trim(),
+            'apellidos': _apellidosController.text.trim(),
+            'telefono': _telefonoController.text.trim(),
+          },
         );
       }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_isLogin ? 'Login correcto' : 'Registro correcto')),
+          SnackBar(
+            content: Text(_isLogin ? 'Login correcto' : 'Registro correcto'),
+          ),
         );
       }
-
     } on AuthException catch (e) {
       _showError(e.message);
     } catch (e) {
@@ -59,7 +78,9 @@ class _AuthScreenState extends State<AuthScreen> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Card(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             child: Padding(
               padding: const EdgeInsets.all(24),
               child: Column(
@@ -67,10 +88,39 @@ class _AuthScreenState extends State<AuthScreen> {
                 children: [
                   Text(
                     _isLogin ? 'Iniciar Sesión' : 'Crear Cuenta',
-                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   const SizedBox(height: 24),
-
+                  if (!_isLogin) ...[
+                    TextField(
+                      controller: _nombreController,
+                      decoration: const InputDecoration(
+                        labelText: 'Nombre',
+                        prefixIcon: Icon(Icons.person),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _apellidosController,
+                      decoration: const InputDecoration(
+                        labelText: 'Apellidos',
+                        prefixIcon: Icon(Icons.person_outline),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _telefonoController,
+                      keyboardType: TextInputType.phone,
+                      decoration: const InputDecoration(
+                        labelText: 'Teléfono',
+                        prefixIcon: Icon(Icons.phone),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   TextField(
                     controller: _emailController,
                     decoration: const InputDecoration(
@@ -118,5 +168,16 @@ class _AuthScreenState extends State<AuthScreen> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    // Liberar los controladores para liberar memoria
+    _emailController.dispose();
+    _passwordController.dispose();
+    _nombreController.dispose();
+    _apellidosController.dispose();
+    _telefonoController.dispose();
+    super.dispose();
   }
 }
