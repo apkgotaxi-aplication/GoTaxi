@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:gotaxi/presentation/screens/home/home_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -50,11 +51,19 @@ class _AuthScreenState extends State<AuthScreen> {
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(_isLogin ? 'Login correcto' : 'Registro correcto'),
-          ),
-        );
+        if (_isLogin) {
+          // Navegar a la pantalla principal tras login
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute<void>(builder: (_) => const HomeScreen()),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Registro correcto. Ahora inicia sesión.'),
+            ),
+          );
+          setState(() => _isLogin = true);
+        }
       }
     } on AuthException catch (e) {
       _showError(e.message);
