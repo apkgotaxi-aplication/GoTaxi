@@ -29,6 +29,7 @@ class _MapTabState extends State<MapTab> {
       // Comprobar si el servicio de ubicación está habilitado
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
+        if (!mounted) return;
         setState(() {
           _error = 'El servicio de ubicación está desactivado';
           _loading = false;
@@ -41,6 +42,7 @@ class _MapTabState extends State<MapTab> {
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
+          if (!mounted) return;
           setState(() {
             _error = 'Permisos de ubicación denegados';
             _loading = false;
@@ -50,6 +52,7 @@ class _MapTabState extends State<MapTab> {
       }
 
       if (permission == LocationPermission.deniedForever) {
+        if (!mounted) return;
         setState(() {
           _error = 'Permisos de ubicación denegados permanentemente';
           _loading = false;
@@ -64,11 +67,13 @@ class _MapTabState extends State<MapTab> {
         ),
       );
 
+      if (!mounted) return;
       setState(() {
         _currentPosition = LatLng(position.latitude, position.longitude);
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = 'Error al obtener la ubicación';
         _loading = false;
