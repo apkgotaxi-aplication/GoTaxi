@@ -15,7 +15,7 @@ class _MapTabState extends State<MapTab> {
   bool _loading = true;
   String? _error;
 
-  // Fallback por si no se puede obtener la ubicación
+  // ubicación por defecto (Madrid) en caso de que no se pueda obtener la ubicación actual
   static const LatLng _defaultPosition = LatLng(40.4168, -3.7038);
 
   @override
@@ -37,7 +37,7 @@ class _MapTabState extends State<MapTab> {
         return;
       }
 
-      // Comprobar y solicitar permisos
+      // Comprobar permisos
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -60,7 +60,6 @@ class _MapTabState extends State<MapTab> {
         return;
       }
 
-      // Obtener la posición actual
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,

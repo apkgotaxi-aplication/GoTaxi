@@ -15,9 +15,43 @@ class _AuthScreenState extends State<AuthScreen> {
   final _nombreController = TextEditingController();
   final _apellidosController = TextEditingController();
   final _telefonoController = TextEditingController();
+  final _dniController = TextEditingController();
 
   bool _isLogin = true;
   bool _loading = false;
+
+  /// Valida un DNI/NIE español.
+  /// Formato DNI: 8 dígitos + 1 letra.
+  /// Formato NIE: X/Y/Z + 7 dígitos + 1 letra.
+  bool _validarDni(String dni) {
+    final dniUpper = dni.toUpperCase().trim();
+    final dniRegex = RegExp(r'^[0-9]{8}[A-Z]$');
+    final nieRegex = RegExp(r'^[XYZ][0-9]{7}[A-Z]$');
+
+    if (!dniRegex.hasMatch(dniUpper) && !nieRegex.hasMatch(dniUpper)) {
+      return false;
+    }
+
+    const letras = 'TRWAGMYFPDXBNJZSQVHLCKE';
+    String numStr = dniUpper;
+
+    // Reemplazar letra inicial del NIE por su número equivalente
+    if (dniUpper.startsWith('X')) {
+      numStr = '0${dniUpper.substring(1)}';
+    } else if (dniUpper.startsWith('Y')) {
+      numStr = '1${dniUpper.substring(1)}';
+    } else if (dniUpper.startsWith('Z')) {
+      numStr = '2${dniUpper.substring(1)}';
+    }
+
+    final numero = int.tryParse(numStr.substring(0, numStr.length - 1));
+    if (numero == null) return false;
+
+    final letraEsperada = letras[numero % 23];
+    final letraIntroducida = dniUpper[dniUpper.length - 1];
+
+    return letraEsperada == letraIntroducida;
+  }
 
   Future<void> _submit() async {
     if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
@@ -28,6 +62,16 @@ class _AuthScreenState extends State<AuthScreen> {
     if (!_isLogin &&
         (_nombreController.text.isEmpty || _apellidosController.text.isEmpty)) {
       _showError('Nombre y apellidos son obligatorios para el registro');
+      return;
+    }
+
+    if (!_isLogin && _dniController.text.trim().isEmpty) {
+      _showError('El DNI es obligatorio para el registro');
+      return;
+    }
+
+    if (!_isLogin && !_validarDni(_dniController.text)) {
+      _showError('El DNI introducido no es correcto');
       return;
     }
     setState(() => _loading = true);
@@ -46,6 +90,7 @@ class _AuthScreenState extends State<AuthScreen> {
             'nombre': _nombreController.text.trim(),
             'apellidos': _apellidosController.text.trim(),
             'telefono': _telefonoController.text.trim(),
+            'dni': _dniController.text.trim().toUpperCase(),
           },
         );
       }
@@ -129,6 +174,16 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
+                    TextField(
+                      controller: _dniController,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(
+                        labelText: 'DNI / NIE *',
+                        prefixIcon: Icon(Icons.badge),
+                        hintText: '12345678A',
+                      ),
+                    ),
+                    const SizedBox(height: 16),
                   ],
                   TextField(
                     controller: _emailController,
@@ -187,6 +242,7 @@ class _AuthScreenState extends State<AuthScreen> {
     _nombreController.dispose();
     _apellidosController.dispose();
     _telefonoController.dispose();
+    _dniController.dispose();
     super.dispose();
   }
 }
