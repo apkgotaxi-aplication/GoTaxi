@@ -41,6 +41,7 @@ create_issue "RF10 - Cancelar Viaje" "Lógica para cancelar un viaje actual (con
 
 create_issue "RF13 - Sistema de Pago" "Integración de pasarela de pago (Stripe/PayPal/API Banco)." "BackEnd,FrontEnd"
 create_issue "RF19 - Devolución de Dinero" "Devolución del pago si el viaje no está en curso." "BackEnd,Database"
+create_issue "RF30 - Mostrar Mapa" "Introduccion en la aplicacion del mapa mediante API de Google Maps." "BackEnd,Database"
 create_issue "RF07 - Taxista: Historial de Viajes" "Consultar historial de viajes realizados con ganancias." "FrontEnd,BackEnd,Database"
 create_issue "RF08 - Cliente: Historial de Viajes" "Consultar historial de viajes realizados con detalles." "FrontEnd,BackEnd,Database"
 
@@ -53,6 +54,9 @@ create_issue "RF25 - Favoritos" "Guardar direcciones frecuentes (Casa, Trabajo) 
 create_issue "RF14 - Información Empresas" "Creación apartado información para empresas." "FrontEnd"
 create_issue "RF15 - Sobre Nosotros" "Creación apartado sobre nosotros y contacto." "FrontEnd"
 create_issue "RF29 - FAQ" "Creación apartado de preguntas frecuentes para clientes y taxistas." "FrontEnd"
+create_issue "RF30 - Crear navegacion entre pantalllas" "Se implementará la navegación entre pantallas como el mapa, o el perfil, mediante barra de navegación inferior." "FrontEnd"
+
+
 
 echo "--------------------------------------------------------"
 echo "Isues creadas y asignadas al proyecto"
