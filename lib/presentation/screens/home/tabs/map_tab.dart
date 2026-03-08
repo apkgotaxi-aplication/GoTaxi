@@ -15,12 +15,14 @@ class MapTab extends StatefulWidget {
 }
 
 class _MapTabState extends State<MapTab> {
+  static const String _defaultOriginText = 'Mi ubicación actual';
+
   String get _googleMapsApiKey => dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
 
   GoogleMapController? _mapController;
   LatLng? _currentPosition;
   final TextEditingController _originController = TextEditingController(
-    text: 'Mi ubicación actual',
+    text: _defaultOriginText,
   );
   final TextEditingController _destinationController = TextEditingController();
   final Set<Marker> _markers = <Marker>{};
@@ -123,7 +125,7 @@ class _MapTabState extends State<MapTab> {
     final shouldUseCurrentLocation =
         isOrigin &&
         (normalized.isEmpty ||
-            normalized.toLowerCase() == 'mi ubicación actual');
+            normalized.toLowerCase() == _defaultOriginText.toLowerCase());
 
     if (shouldUseCurrentLocation) {
       final current = _currentPosition;
@@ -378,6 +380,14 @@ class _MapTabState extends State<MapTab> {
                       child: TextField(
                         controller: _originController,
                         textInputAction: TextInputAction.next,
+                        onTap: () {
+                          if (_originController.text == _defaultOriginText) {
+                            _originController.selection = TextSelection(
+                              baseOffset: 0,
+                              extentOffset: _originController.text.length,
+                            );
+                          }
+                        },
                         decoration: InputDecoration(
                           hintText: 'Origen',
                           filled: true,
@@ -403,7 +413,7 @@ class _MapTabState extends State<MapTab> {
                         textInputAction: TextInputAction.search,
                         onSubmitted: (_) => _searchRoute(),
                         decoration: InputDecoration(
-                          hintText: '¿A dónde vas?',
+                          hintText: 'Destino',
                           filled: true,
                           fillColor: theme.colorScheme.surfaceContainerHighest,
                           border: OutlineInputBorder(
@@ -413,11 +423,6 @@ class _MapTabState extends State<MapTab> {
                           isDense: true,
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton.filled(
-                      onPressed: _loadingRoute ? null : _searchRoute,
-                      icon: const Icon(Icons.search),
                     ),
                   ],
                 ),
