@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -14,8 +15,7 @@ class MapTab extends StatefulWidget {
 }
 
 class _MapTabState extends State<MapTab> {
-  static const String _googleMapsApiKey =
-      'AIzaSyBLkNMfUnpHgxuy2ohspagAqJDfqWGyFNE';
+  String get _googleMapsApiKey => dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
 
   GoogleMapController? _mapController;
   LatLng? _currentPosition;
@@ -169,6 +169,10 @@ class _MapTabState extends State<MapTab> {
         _destinationController.text,
         isOrigin: false,
       );
+
+      if (_googleMapsApiKey.isEmpty) {
+        throw Exception('Falta GOOGLE_MAPS_API_KEY en el archivo .env');
+      }
 
       final uri =
           Uri.https('maps.googleapis.com', '/maps/api/directions/json', {

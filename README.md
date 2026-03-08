@@ -37,3 +37,14 @@ Nuestros objetivos para este proyecto se dividen en tres áreas principales:
 En resumen, nuestro proyecto busca llevar la plataforma web creada por Eduardo Sumariva Salgado, a otro nivel, ofreciendo una aplicación móvil que no solo replique las funcionalidades existentes, sino que las mejore con características nativas de los dispositivos móviles, creando una experiencia más completa y moderna, con una interfaz mucho más intuitiva.
 
 APIS a usar: OpenstreetMap, agendaPro, Stripe
+
+## Configuración de variables de entorno
+
+1. Copia `.env.example` como `.env` en la raíz del proyecto.
+2. Añade tus credenciales reales:
+	- `GOOGLE_MAPS_API_KEY`
+	- `SUPABASE_URL`
+	- `SUPABASE_ANON_KEY`
+3. La app usa Google Maps para Directions (Dart) y Android Manifest (Gradle), y Supabase desde `main.dart`.
+
+El archivo `.env` está ignorado en git para no subir secretos a GitHub.
