@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -6,6 +7,8 @@ import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
+import 'package:gotaxi/utils/pricing_constants.dart';
+import 'package:gotaxi/utils/places_autocomplete_service.dart';
 
 class MapTab extends StatefulWidget {
   const MapTab({super.key});
@@ -18,6 +21,8 @@ class _MapTabState extends State<MapTab> {
   static const String _defaultOriginText = 'Mi ubicación actual';
 
   String get _googleMapsApiKey => dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
+
+  late PlacesAutocompleteService _placesService;
 
   GoogleMapController? _mapController;
   LatLng? _currentPosition;
@@ -34,6 +39,19 @@ class _MapTabState extends State<MapTab> {
   String? _routeError;
   String? _distanceText;
   String? _durationText;
+  // ignore: unused_field
+  double? _distanceMeters;
+  // ignore: unused_field
+  double? _durationSeconds;
+  double? _estimatedFareEur;
+
+  // Autocomplete state
+  List<PlacePrediction> _originSuggestions = [];
+  List<PlacePrediction> _destinationSuggestions = [];
+  bool _showOriginSuggestions = false;
+  bool _showDestinationSuggestions = false;
+  Timer? _originDebounce;
+  Timer? _destinationDebounce;
 
   // ubicación por defecto
   static const LatLng _defaultPosition = LatLng(40.4168, -3.7038);
@@ -43,13 +61,84 @@ class _MapTabState extends State<MapTab> {
     _originController.dispose();
     _destinationController.dispose();
     _mapController?.dispose();
+    _originDebounce?.cancel();
+    _destinationDebounce?.cancel();
     super.dispose();
   }
 
   @override
   void initState() {
     super.initState();
+    _placesService = PlacesAutocompleteService(apiKey: _googleMapsApiKey);
+    _originController.addListener(_onOriginChanged);
+    _destinationController.addListener(_onDestinationChanged);
     _determinePosition();
+  }
+
+  void _onOriginChanged() {
+    _originDebounce?.cancel();
+    _originDebounce = Timer(const Duration(milliseconds: 400), () {
+      _fetchOriginSuggestions(_originController.text);
+    });
+  }
+
+  void _onDestinationChanged() {
+    _destinationDebounce?.cancel();
+    _destinationDebounce = Timer(const Duration(milliseconds: 400), () {
+      _fetchDestinationSuggestions(_destinationController.text);
+    });
+  }
+
+  Future<void> _fetchOriginSuggestions(String input) async {
+    if (input == _defaultOriginText || input.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _originSuggestions = [];
+        _showOriginSuggestions = false;
+      });
+      return;
+    }
+
+    final suggestions = await _placesService.getPredictions(input);
+    if (!mounted) return;
+    setState(() {
+      _originSuggestions = suggestions;
+      _showOriginSuggestions = suggestions.isNotEmpty;
+    });
+  }
+
+  Future<void> _fetchDestinationSuggestions(String input) async {
+    if (input.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _destinationSuggestions = [];
+        _showDestinationSuggestions = false;
+      });
+      return;
+    }
+
+    final suggestions = await _placesService.getPredictions(input);
+    if (!mounted) return;
+    setState(() {
+      _destinationSuggestions = suggestions;
+      _showDestinationSuggestions = suggestions.isNotEmpty;
+    });
+  }
+
+  void _selectOriginSuggestion(PlacePrediction prediction) {
+    _originController.text = prediction.description;
+    setState(() {
+      _showOriginSuggestions = false;
+      _originSuggestions = [];
+    });
+  }
+
+  void _selectDestinationSuggestion(PlacePrediction prediction) {
+    _destinationController.text = prediction.description;
+    setState(() {
+      _showDestinationSuggestions = false;
+      _destinationSuggestions = [];
+    });
   }
 
   Future<void> _determinePosition() async {
@@ -220,10 +309,23 @@ class _MapTabState extends State<MapTab> {
 
       final routePoints = _decodePolyline(encodedPolyline);
 
+      // Extract numeric values for fare calculation
+      final distanceMeters = (distance?['value'] as num?)?.toDouble() ?? 0.0;
+      final durationSeconds = (duration?['value'] as num?)?.toDouble() ?? 0.0;
+      final kilometers = distanceMeters / 1000;
+      final minutes = durationSeconds / 60;
+      final estimatedFare = PricingConstants.calculateEstimatedFare(
+        kilometers: kilometers,
+        minutes: minutes,
+      );
+
       if (!mounted) return;
       setState(() {
         _distanceText = (distance?['text'] as String?) ?? '-';
         _durationText = (duration?['text'] as String?) ?? '-';
+        _distanceMeters = distanceMeters;
+        _durationSeconds = durationSeconds;
+        _estimatedFareEur = estimatedFare;
         _markers
           ..clear()
           ..add(
@@ -257,6 +359,9 @@ class _MapTabState extends State<MapTab> {
       if (!mounted) return;
       setState(() {
         _routeError = e.toString().replaceFirst('Exception: ', '');
+        _distanceMeters = null;
+        _durationSeconds = null;
+        _estimatedFareEur = null;
       });
     } finally {
       if (mounted) {
@@ -369,61 +474,210 @@ class _MapTabState extends State<MapTab> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Row(
+                Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                      Icons.gps_fixed_rounded,
-                      color: theme.colorScheme.primary,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextField(
-                        controller: _originController,
-                        textInputAction: TextInputAction.next,
-                        onTap: () {
-                          if (_originController.text == _defaultOriginText) {
-                            _originController.selection = TextSelection(
-                              baseOffset: 0,
-                              extentOffset: _originController.text.length,
-                            );
-                          }
-                        },
-                        decoration: InputDecoration(
-                          hintText: 'Origen',
-                          filled: true,
-                          fillColor: theme.colorScheme.surfaceContainerHighest,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none,
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.gps_fixed_rounded,
+                          color: theme.colorScheme.primary,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextField(
+                            controller: _originController,
+                            textInputAction: TextInputAction.next,
+                            onTap: () {
+                              if (_originController.text ==
+                                  _defaultOriginText) {
+                                _originController.selection = TextSelection(
+                                  baseOffset: 0,
+                                  extentOffset: _originController.text.length,
+                                );
+                              }
+                            },
+                            decoration: InputDecoration(
+                              hintText: 'Origen',
+                              filled: true,
+                              fillColor:
+                                  theme.colorScheme.surfaceContainerHighest,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide.none,
+                              ),
+                              isDense: true,
+                            ),
                           ),
-                          isDense: true,
+                        ),
+                      ],
+                    ),
+                    if (_showOriginSuggestions) ...[
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 200),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surfaceContainerHighest,
+                          borderRadius: const BorderRadius.only(
+                            bottomLeft: Radius.circular(12),
+                            bottomRight: Radius.circular(12),
+                          ),
+                          border: Border(
+                            bottom: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                            left: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                            right: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                          ),
+                        ),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _originSuggestions.length,
+                          itemBuilder: (context, index) {
+                            final suggestion = _originSuggestions[index];
+                            return InkWell(
+                              onTap: () => _selectOriginSuggestion(suggestion),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      suggestion.mainText.isNotEmpty
+                                          ? suggestion.mainText
+                                          : suggestion.description,
+                                      style: theme.textTheme.bodyMedium
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.w500,
+                                            color: theme.colorScheme.onSurface,
+                                          ),
+                                    ),
+                                    if (suggestion.secondaryText != null) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        suggestion.secondaryText!,
+                                        style: theme.textTheme.bodySmall
+                                            ?.copyWith(
+                                              color: theme
+                                                  .colorScheme
+                                                  .onSurfaceVariant,
+                                            ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 10),
-                Row(
+                Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.location_pin, color: theme.colorScheme.primary),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextField(
-                        controller: _destinationController,
-                        textInputAction: TextInputAction.search,
-                        onSubmitted: (_) => _searchRoute(),
-                        decoration: InputDecoration(
-                          hintText: 'Destino',
-                          filled: true,
-                          fillColor: theme.colorScheme.surfaceContainerHighest,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none,
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.location_pin,
+                          color: theme.colorScheme.primary,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextField(
+                            controller: _destinationController,
+                            textInputAction: TextInputAction.search,
+                            onSubmitted: (_) => _searchRoute(),
+                            decoration: InputDecoration(
+                              hintText: 'Destino',
+                              filled: true,
+                              fillColor:
+                                  theme.colorScheme.surfaceContainerHighest,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide.none,
+                              ),
+                              isDense: true,
+                            ),
                           ),
-                          isDense: true,
+                        ),
+                      ],
+                    ),
+                    if (_showDestinationSuggestions) ...[
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 200),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surfaceContainerHighest,
+                          borderRadius: const BorderRadius.only(
+                            bottomLeft: Radius.circular(12),
+                            bottomRight: Radius.circular(12),
+                          ),
+                          border: Border(
+                            bottom: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                            left: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                            right: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                          ),
+                        ),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _destinationSuggestions.length,
+                          itemBuilder: (context, index) {
+                            final suggestion = _destinationSuggestions[index];
+                            return InkWell(
+                              onTap: () =>
+                                  _selectDestinationSuggestion(suggestion),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      suggestion.mainText.isNotEmpty
+                                          ? suggestion.mainText
+                                          : suggestion.description,
+                                      style: theme.textTheme.bodyMedium
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.w500,
+                                            color: theme.colorScheme.onSurface,
+                                          ),
+                                    ),
+                                    if (suggestion.secondaryText != null) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        suggestion.secondaryText!,
+                                        style: theme.textTheme.bodySmall
+                                            ?.copyWith(
+                                              color: theme
+                                                  .colorScheme
+                                                  .onSurfaceVariant,
+                                            ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
                 if (_loadingRoute) ...[
@@ -471,6 +725,26 @@ class _MapTabState extends State<MapTab> {
                       Text('$_durationText'),
                     ],
                   ),
+                  if (_estimatedFareEur != null) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.local_taxi_rounded,
+                          size: 18,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Precio aprox.: ${_estimatedFareEur!.toStringAsFixed(2)} ${PricingConstants.currencySymbol}',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w500,
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
                 const SizedBox(height: 12),
                 Row(
