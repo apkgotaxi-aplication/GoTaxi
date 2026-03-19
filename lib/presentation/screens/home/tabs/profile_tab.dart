@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:gotaxi/presentation/screens/home/about_us_screen.dart';
 import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
+import 'package:gotaxi/presentation/screens/home/faq_screen.dart';
+import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
 import '../../../../utils/profile/user_personal_data_utils.dart';
 
 class ProfileTab extends StatefulWidget {
@@ -140,11 +143,9 @@ class _ProfileTabState extends State<ProfileTab> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Cerrar sesión'),
-        content:
-            const Text('¿Estás seguro de que quieres cerrar sesión?'),
+        content: const Text('¿Estás seguro de que quieres cerrar sesión?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -152,8 +153,7 @@ class _ProfileTabState extends State<ProfileTab> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            style: FilledButton.styleFrom(
-                backgroundColor: Colors.red.shade700),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
             child: const Text('Cerrar sesión'),
           ),
         ],
@@ -173,7 +173,7 @@ class _ProfileTabState extends State<ProfileTab> {
 
   void _showMisDatosSheet() {
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -262,11 +262,16 @@ class _ProfileTabState extends State<ProfileTab> {
                               ? const SizedBox(
                                   width: 20,
                                   height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
                                 )
                               : const Text(
                                   'Guardar cambios',
-                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
                                 ),
                         ),
                       ),
@@ -283,69 +288,14 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   void _showMisViajesSheet() {
-    final colorScheme = Theme.of(context).colorScheme;
-    
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.85,
-        decoration: BoxDecoration(
-          color: colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          children: [
-            Container(
-              margin: const EdgeInsets.only(top: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade400,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Mis viajes',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-            const Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.directions_car, size: 64, color: Colors.grey),
-                    SizedBox(height: 16),
-                    Text(
-                      'No tienes viajes recientes',
-                      style: TextStyle(fontSize: 16, color: Colors.grey),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const RideHistoryScreen()));
   }
 
   void _showFavoritosSheet() {
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -406,7 +356,7 @@ class _ProfileTabState extends State<ProfileTab> {
 
   void _showMetodosPagoSheet() {
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -467,7 +417,7 @@ class _ProfileTabState extends State<ProfileTab> {
 
   void _showNotificacionesSheet() {
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -528,7 +478,7 @@ class _ProfileTabState extends State<ProfileTab> {
 
   void _showAyudaSheet() {
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -574,7 +524,7 @@ class _ProfileTabState extends State<ProfileTab> {
                     icon: Icons.help_outline,
                     title: 'Preguntas frecuentes',
                     subtitle: 'Resuelve tus dudas comunes',
-                    onTap: () {},
+                    onTap: _openFaqScreen,
                   ),
                   _buildHelpItem(
                     icon: Icons.chat_bubble_outline,
@@ -603,103 +553,17 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  void _showAcercaDeSheet() {
-    final colorScheme = Theme.of(context).colorScheme;
-    
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.85,
-        decoration: BoxDecoration(
-          color: colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          children: [
-            Container(
-              margin: const EdgeInsets.only(top: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade400,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Acerca de',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                children: [
-                  const SizedBox(height: 20),
-                  Center(
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 80,
-                          height: 80,
-                          decoration: BoxDecoration(
-                            color: colorScheme.primary,
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: const Icon(
-                            Icons.local_taxi,
-                            size: 48,
-                            color: Colors.white,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'GoTaxi',
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Versión 1.0.0',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey.shade500,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-                  const Text(
-                    'GoTaxi es una aplicación de transporte que te permite solicitar taxis de manera rápida y segura.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 14),
-                  ),
-                  const SizedBox(height: 32),
-                  _buildInfoItem(title: 'Términos de servicio'),
-                  _buildInfoItem(title: 'Política de privacidad'),
-                  _buildInfoItem(title: 'Licencias'),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  void _openFaqScreen() {
+    Navigator.of(context).pop();
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const FaqScreen()));
+  }
+
+  void _openAboutUsScreen() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const AboutUsScreen()));
   }
 
   Widget _buildEditField({
@@ -724,7 +588,9 @@ class _ProfileTabState extends State<ProfileTab> {
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: colorScheme.outline.withValues(alpha: 0.5)),
+          borderSide: BorderSide(
+            color: colorScheme.outline.withValues(alpha: 0.5),
+          ),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
@@ -753,21 +619,12 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  Widget _buildInfoItem({required String title}) {
-    return ListTile(
-      title: Text(title),
-      trailing: const Icon(Icons.chevron_right),
-      onTap: () {},
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     if (_loading) {
-      return const Scaffold(
-          body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     if (_error != null) {
@@ -778,8 +635,7 @@ class _ProfileTabState extends State<ProfileTab> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.error_outline,
-                    size: 64, color: Colors.red.shade400),
+                Icon(Icons.error_outline, size: 64, color: Colors.red.shade400),
                 const SizedBox(height: 16),
                 Text(
                   _error!,
@@ -799,16 +655,10 @@ class _ProfileTabState extends State<ProfileTab> {
       );
     }
 
-    final menuItems = [
-      _MenuItem(
-        icon: Icons.person_outline,
-        title: 'Mis datos',
-        color: Colors.blue,
-        onTap: _showMisDatosSheet,
-      ),
+    final viajesItems = [
       _MenuItem(
         icon: Icons.directions_car,
-        title: 'Mis viajes',
+        title: 'Historial de viajes',
         color: Colors.green,
         onTap: _showMisViajesSheet,
       ),
@@ -819,17 +669,29 @@ class _ProfileTabState extends State<ProfileTab> {
         onTap: _showFavoritosSheet,
       ),
       _MenuItem(
-        icon: Icons.credit_card,
-        title: 'Pago',
-        color: Colors.purple,
-        onTap: _showMetodosPagoSheet,
-      ),
-      _MenuItem(
         icon: Icons.notifications_outlined,
         title: 'Notificaciones',
         color: Colors.orange,
         onTap: _showNotificacionesSheet,
       ),
+    ];
+
+    final miInformacionItems = [
+      _MenuItem(
+        icon: Icons.person_outline,
+        title: 'Mis datos',
+        color: Colors.blue,
+        onTap: _showMisDatosSheet,
+      ),
+      _MenuItem(
+        icon: Icons.credit_card,
+        title: 'Pago',
+        color: Colors.purple,
+        onTap: _showMetodosPagoSheet,
+      ),
+    ];
+
+    final otrosItems = [
       _MenuItem(
         icon: Icons.help_outline,
         title: 'Ayuda',
@@ -840,7 +702,7 @@ class _ProfileTabState extends State<ProfileTab> {
         icon: Icons.info_outline,
         title: 'Acerca de',
         color: Colors.indigo,
-        onTap: _showAcercaDeSheet,
+        onTap: _openAboutUsScreen,
       ),
     ];
 
@@ -874,15 +736,11 @@ class _ProfileTabState extends State<ProfileTab> {
                           gradient: LinearGradient(
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
-                            colors: [
-                              colorScheme.primary,
-                              colorScheme.tertiary
-                            ],
+                            colors: [colorScheme.primary, colorScheme.tertiary],
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: colorScheme.primary
-                                  .withValues(alpha: 0.4),
+                              color: colorScheme.primary.withValues(alpha: 0.4),
                               blurRadius: 20,
                               offset: const Offset(0, 8),
                             ),
@@ -914,16 +772,18 @@ class _ProfileTabState extends State<ProfileTab> {
                       const SizedBox(height: 4),
                       Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 6),
+                          horizontal: 16,
+                          vertical: 6,
+                        ),
                         decoration: BoxDecoration(
                           color: UserPersonalDataUtils.getRoleBadgeColor(
-                                  _isCliente)
-                              .withValues(alpha: 0.2),
+                            _isCliente,
+                          ).withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(20),
                           border: Border.all(
                             color: UserPersonalDataUtils.getRoleBadgeColor(
-                                    _isCliente)
-                                .withValues(alpha: 0.5),
+                              _isCliente,
+                            ).withValues(alpha: 0.5),
                           ),
                         ),
                         child: Text(
@@ -946,26 +806,26 @@ class _ProfileTabState extends State<ProfileTab> {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.all(20),
-              child: GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                  childAspectRatio: 1,
-                ),
-                itemCount: menuItems.length,
-                itemBuilder: (context, index) {
-                  final item = menuItems[index];
-                  return _buildMenuButton(
+              child: Column(
+                children: [
+                  _buildMenuSection(
                     context: context,
-                    icon: item.icon,
-                    title: item.title,
-                    color: item.color,
-                    onTap: item.onTap,
-                  );
-                },
+                    title: 'Viajes',
+                    items: viajesItems,
+                  ),
+                  const SizedBox(height: 14),
+                  _buildMenuSection(
+                    context: context,
+                    title: 'Mi informacion',
+                    items: miInformacionItems,
+                  ),
+                  const SizedBox(height: 14),
+                  _buildMenuSection(
+                    context: context,
+                    title: 'Otros',
+                    items: otrosItems,
+                  ),
+                ],
               ),
             ),
           ),
@@ -994,52 +854,61 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  Widget _buildMenuButton({
+  Widget _buildMenuSection({
     required BuildContext context,
-    required IconData icon,
     required String title,
-    required Color color,
-    required VoidCallback onTap,
+    required List<_MenuItem> items,
   }) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: color.withValues(alpha: 0.3),
-              width: 1,
-            ),
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 8),
+          child: Text(
+            title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+        ),
+        Card(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
           ),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: color,
-                ),
-                textAlign: TextAlign.center,
-              ),
+              for (var index = 0; index < items.length; index++) ...[
+                _buildSectionItem(context: context, item: items[index]),
+                if (index != items.length - 1)
+                  Divider(
+                    height: 1,
+                    color: colorScheme.outline.withValues(alpha: 0.2),
+                  ),
+              ],
             ],
           ),
         ),
+      ],
+    );
+  }
+
+  Widget _buildSectionItem({
+    required BuildContext context,
+    required _MenuItem item,
+  }) {
+    return ListTile(
+      leading: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: item.color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(item.icon, color: item.color, size: 20),
       ),
+      title: Text(item.title),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: item.onTap,
     );
   }
 

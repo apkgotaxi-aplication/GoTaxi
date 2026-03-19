@@ -2,10 +2,19 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:gotaxi/data/services/auth_service.dart';
+import 'package:gotaxi/domain/validators/dni_validator.dart';
 import 'package:gotaxi/presentation/screens/home/home_screen.dart';
 
 class AuthScreen extends StatefulWidget {
-  const AuthScreen({super.key});
+  const AuthScreen({
+    super.key,
+    this.authService,
+    this.homeBuilder,
+  });
+
+  final AuthService? authService;
+  final WidgetBuilder? homeBuilder;
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -23,47 +32,18 @@ class _AuthScreenState extends State<AuthScreen>
   bool _isLogin = true;
   bool _loading = false;
   late final AnimationController _beamsController;
+  late final AuthService _authService;
+  late final WidgetBuilder _homeBuilder;
 
   @override
   void initState() {
     super.initState();
+    _authService = widget.authService ?? SupabaseAuthService();
+    _homeBuilder = widget.homeBuilder ?? (_) => const HomeScreen();
     _beamsController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 7),
     )..repeat();
-  }
-
-  /// Valida un DNI/NIE español.
-  /// Formato DNI: 8 dígitos + 1 letra.
-  /// Formato NIE: X/Y/Z + 7 dígitos + 1 letra.
-  bool _validarDni(String dni) {
-    final dniUpper = dni.toUpperCase().trim();
-    final dniRegex = RegExp(r'^[0-9]{8}[A-Z]$');
-    final nieRegex = RegExp(r'^[XYZ][0-9]{7}[A-Z]$');
-
-    if (!dniRegex.hasMatch(dniUpper) && !nieRegex.hasMatch(dniUpper)) {
-      return false;
-    }
-
-    const letras = 'TRWAGMYFPDXBNJZSQVHLCKE';
-    String numStr = dniUpper;
-
-    // Reemplazar letra inicial del NIE por su número equivalente
-    if (dniUpper.startsWith('X')) {
-      numStr = '0${dniUpper.substring(1)}';
-    } else if (dniUpper.startsWith('Y')) {
-      numStr = '1${dniUpper.substring(1)}';
-    } else if (dniUpper.startsWith('Z')) {
-      numStr = '2${dniUpper.substring(1)}';
-    }
-
-    final numero = int.tryParse(numStr.substring(0, numStr.length - 1));
-    if (numero == null) return false;
-
-    final letraEsperada = letras[numero % 23];
-    final letraIntroducida = dniUpper[dniUpper.length - 1];
-
-    return letraEsperada == letraIntroducida;
   }
 
   Future<void> _submit() async {
@@ -83,7 +63,7 @@ class _AuthScreenState extends State<AuthScreen>
       return;
     }
 
-    if (!_isLogin && !_validarDni(_dniController.text)) {
+    if (!_isLogin && !validarDniNie(_dniController.text)) {
       _showError('El DNI introducido no es correcto');
       return;
     }
@@ -91,12 +71,12 @@ class _AuthScreenState extends State<AuthScreen>
 
     try {
       if (_isLogin) {
-        await Supabase.instance.client.auth.signInWithPassword(
+        await _authService.signIn(
           email: _emailController.text.trim(),
           password: _passwordController.text.trim(),
         );
       } else {
-        await Supabase.instance.client.auth.signUp(
+        await _authService.signUp(
           email: _emailController.text.trim(),
           password: _passwordController.text.trim(),
           data: {
@@ -110,9 +90,8 @@ class _AuthScreenState extends State<AuthScreen>
 
       if (mounted) {
         if (_isLogin) {
-          // Navegar a la pantalla principal tras login
           Navigator.of(context).pushReplacement(
-            MaterialPageRoute<void>(builder: (_) => const HomeScreen()),
+            MaterialPageRoute<void>(builder: _homeBuilder),
           );
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -279,7 +258,6 @@ class _AuthScreenState extends State<AuthScreen>
   @override
   void dispose() {
     _beamsController.dispose();
-    // Liberar los controladores para liberar memoria
     _emailController.dispose();
     _passwordController.dispose();
     _nombreController.dispose();
