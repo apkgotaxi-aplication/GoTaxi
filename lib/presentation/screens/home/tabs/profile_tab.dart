@@ -709,16 +709,10 @@ class _ProfileTabState extends State<ProfileTab> {
       );
     }
 
-    final menuItems = [
-      _MenuItem(
-        icon: Icons.person_outline,
-        title: 'Mis datos',
-        color: Colors.blue,
-        onTap: _showMisDatosSheet,
-      ),
+    final viajesItems = [
       _MenuItem(
         icon: Icons.directions_car,
-        title: 'Mis viajes',
+        title: 'Historial de viajes',
         color: Colors.green,
         onTap: _showMisViajesSheet,
       ),
@@ -729,17 +723,29 @@ class _ProfileTabState extends State<ProfileTab> {
         onTap: _showFavoritosSheet,
       ),
       _MenuItem(
-        icon: Icons.credit_card,
-        title: 'Pago',
-        color: Colors.purple,
-        onTap: _showMetodosPagoSheet,
-      ),
-      _MenuItem(
         icon: Icons.notifications_outlined,
         title: 'Notificaciones',
         color: Colors.orange,
         onTap: _showNotificacionesSheet,
       ),
+    ];
+
+    final miInformacionItems = [
+      _MenuItem(
+        icon: Icons.person_outline,
+        title: 'Mis datos',
+        color: Colors.blue,
+        onTap: _showMisDatosSheet,
+      ),
+      _MenuItem(
+        icon: Icons.credit_card,
+        title: 'Pago',
+        color: Colors.purple,
+        onTap: _showMetodosPagoSheet,
+      ),
+    ];
+
+    final otrosItems = [
       _MenuItem(
         icon: Icons.help_outline,
         title: 'Ayuda',
@@ -854,26 +860,26 @@ class _ProfileTabState extends State<ProfileTab> {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.all(20),
-              child: GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 12,
-                  childAspectRatio: 1,
-                ),
-                itemCount: menuItems.length,
-                itemBuilder: (context, index) {
-                  final item = menuItems[index];
-                  return _buildMenuButton(
+              child: Column(
+                children: [
+                  _buildMenuSection(
                     context: context,
-                    icon: item.icon,
-                    title: item.title,
-                    color: item.color,
-                    onTap: item.onTap,
-                  );
-                },
+                    title: 'Viajes',
+                    items: viajesItems,
+                  ),
+                  const SizedBox(height: 14),
+                  _buildMenuSection(
+                    context: context,
+                    title: 'Mi informacion',
+                    items: miInformacionItems,
+                  ),
+                  const SizedBox(height: 14),
+                  _buildMenuSection(
+                    context: context,
+                    title: 'Otros',
+                    items: otrosItems,
+                  ),
+                ],
               ),
             ),
           ),
@@ -902,49 +908,61 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  Widget _buildMenuButton({
+  Widget _buildMenuSection({
     required BuildContext context,
-    required IconData icon,
     required String title,
-    required Color color,
-    required VoidCallback onTap,
+    required List<_MenuItem> items,
   }) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: color.withValues(alpha: 0.3), width: 1),
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 8),
+          child: Text(
+            title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+        ),
+        Card(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
           ),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: color,
-                ),
-                textAlign: TextAlign.center,
-              ),
+              for (var index = 0; index < items.length; index++) ...[
+                _buildSectionItem(context: context, item: items[index]),
+                if (index != items.length - 1)
+                  Divider(
+                    height: 1,
+                    color: colorScheme.outline.withValues(alpha: 0.2),
+                  ),
+              ],
             ],
           ),
         ),
+      ],
+    );
+  }
+
+  Widget _buildSectionItem({
+    required BuildContext context,
+    required _MenuItem item,
+  }) {
+    return ListTile(
+      leading: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: item.color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(item.icon, color: item.color, size: 20),
       ),
+      title: Text(item.title),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: item.onTap,
     );
   }
 
