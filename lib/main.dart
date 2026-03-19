@@ -22,7 +22,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Supabase Auth',
+      title: 'GoTaxi',
       theme: ThemeData.dark(),
       home: const SplashScreen(),
     );
