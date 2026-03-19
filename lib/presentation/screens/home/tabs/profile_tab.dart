@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:gotaxi/presentation/screens/home/about_us_screen.dart';
 import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
 import 'package:gotaxi/presentation/screens/home/faq_screen.dart';
+import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
 import '../../../../utils/profile/user_personal_data_utils.dart';
 
 class ProfileTab extends StatefulWidget {
@@ -287,64 +288,9 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   void _showMisViajesSheet() {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.85,
-        decoration: BoxDecoration(
-          color: colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          children: [
-            Container(
-              margin: const EdgeInsets.only(top: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade400,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Mis viajes',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-            const Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.directions_car, size: 64, color: Colors.grey),
-                    SizedBox(height: 16),
-                    Text(
-                      'No tienes viajes recientes',
-                      style: TextStyle(fontSize: 16, color: Colors.grey),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const RideHistoryScreen()));
   }
 
   void _showFavoritosSheet() {
