@@ -126,7 +126,10 @@ class _MapTabState extends State<MapTab> {
   }
 
   void _selectOriginSuggestion(PlacePrediction prediction) {
+    _originDebounce?.cancel();
+    _originController.removeListener(_onOriginChanged);
     _originController.text = prediction.description;
+    _originController.addListener(_onOriginChanged);
     setState(() {
       _showOriginSuggestions = false;
       _originSuggestions = [];
@@ -134,7 +137,10 @@ class _MapTabState extends State<MapTab> {
   }
 
   void _selectDestinationSuggestion(PlacePrediction prediction) {
+    _destinationDebounce?.cancel();
+    _destinationController.removeListener(_onDestinationChanged);
     _destinationController.text = prediction.description;
+    _destinationController.addListener(_onDestinationChanged);
     setState(() {
       _showDestinationSuggestions = false;
       _destinationSuggestions = [];
@@ -751,7 +757,7 @@ class _MapTabState extends State<MapTab> {
                   children: [
                     Expanded(
                       child: FilledButton(
-                        onPressed: () {},
+                        onPressed: _searchRoute,
                         child: const Text('Pedir ahora'),
                       ),
                     ),
