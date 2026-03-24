@@ -4,6 +4,7 @@ import 'package:gotaxi/presentation/screens/home/about_us_screen.dart';
 import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
 import 'package:gotaxi/presentation/screens/home/faq_screen.dart';
 import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
+import 'package:gotaxi/presentation/fragments/profile/admin_panel_fragment.dart';
 import '../../../../utils/profile/user_personal_data_utils.dart';
 
 class ProfileTab extends StatefulWidget {
@@ -25,6 +26,7 @@ class _ProfileTabState extends State<ProfileTab> {
   bool _loading = true;
   bool _saving = false;
   bool _isCliente = false;
+  bool _isAdmin = false;
   String? _error;
   String _userRole = '';
 
@@ -65,6 +67,31 @@ class _ProfileTabState extends State<ProfileTab> {
       } else {
         _isCliente = false;
         _userRole = 'desconocido';
+      }
+
+      // Verificar si es admin - puede ser cliente admin o taxista admin
+      if (_isCliente) {
+        // Buscar is_admin en tabla clientes
+        final clienteResponse = await _supabase
+            .from('clientes')
+            .select('is_admin')
+            .eq('id', user.id)
+            .maybeSingle();
+
+        if (clienteResponse != null) {
+          _isAdmin = clienteResponse['is_admin'] == true;
+        }
+      } else if (_userRole == 'taxista') {
+        // Buscar is_admin en tabla taxistas
+        final taxistaResponse = await _supabase
+            .from('taxistas')
+            .select('is_admin')
+            .eq('id', user.id)
+            .maybeSingle();
+
+        if (taxistaResponse != null) {
+          _isAdmin = taxistaResponse['is_admin'] == true;
+        }
       }
     } catch (e) {
       _error = 'Error al cargar el perfil: $e';
@@ -820,6 +847,10 @@ class _ProfileTabState extends State<ProfileTab> {
                     items: miInformacionItems,
                   ),
                   const SizedBox(height: 14),
+                  if (_isAdmin) ...[
+                    const AdminPanelFragment(),
+                    const SizedBox(height: 14),
+                  ],
                   _buildMenuSection(
                     context: context,
                     title: 'Otros',
