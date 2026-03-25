@@ -1,4 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'dart:math';
 
 class TaxistaService {
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -19,70 +20,178 @@ class TaxistaService {
     required String color,
     required bool minusvalido,
   }) async {
+    await _validateCreateTaxistaData(
+      email: email,
+      dni: dni,
+      telefono: telefono,
+      licenciaTaxi: licenciaTaxi,
+      matricula: matricula,
+      municipioId: municipioId,
+    );
+
+    String? userId;
+    final normalizedEmail = email.trim().toLowerCase();
+
     try {
       // 1. Crear usuario en Auth
       final authResponse = await _supabase.auth.signUp(
-        email: email,
+        email: normalizedEmail,
         password: _generateSecurePassword(),
+        data: {
+          'nombre': nombre.trim(),
+          'apellidos': apellidos.trim(),
+          'telefono': telefono.trim(),
+          'dni': dni.trim().toUpperCase(),
+        },
       );
 
       if (authResponse.user == null) {
         throw Exception('No se pudo crear el usuario de autenticación');
       }
 
-      final userId = authResponse.user!.id;
+      userId = authResponse.user!.id;
 
-      // 2. Crear registro en tabla usuarios
-      await _supabase.from('usuarios').insert({
-        'id': userId,
-        'nombre': nombre,
-        'apellidos': apellidos,
-        'email': email,
-        'telefono': telefono,
-        'dni': dni.toUpperCase(),
-        'rol': 'taxista',
-      });
+      // 2. Convertir usuario creado a taxista en una única transacción SQL
+      await _supabase.rpc(
+        'create_taxista_profile',
+        params: {
+          'p_user_id': userId,
+          'p_nombre': nombre,
+          'p_apellidos': apellidos,
+          'p_email': email,
+          'p_telefono': telefono,
+          'p_dni': dni,
+          'p_municipio_id': municipioId,
+          'p_licencia_taxi': licenciaTaxi,
+          'p_matricula': matricula,
+          'p_marca': marca,
+          'p_modelo': modelo,
+          'p_color': color,
+          'p_capacidad': capacidad.toString(),
+          'p_minusvalido': minusvalido,
+          'p_is_admin': isAdmin,
+        },
+      );
+    } on AuthException catch (e) {
+      final error = e.message.toLowerCase();
 
-      // 3. Crear vehículo
-      final vehiculoResponse = await _supabase
-          .from('vehiculos')
-          .insert({
-            'licencia_taxi': licenciaTaxi,
-            'matricula': matricula.toUpperCase(),
-            'marca': marca,
-            'modelo': modelo,
-            'color': color,
-            'disponible': true,
-            'minusvalido': minusvalido,
-            'capacidad': capacidad.toString(),
-          })
-          .select()
-          .single();
+      if (error.contains('already registered') ||
+          error.contains('user already registered')) {
+        await _supabase.rpc(
+          'create_taxista_profile_by_email',
+          params: {
+            'p_email': normalizedEmail,
+            'p_nombre': nombre,
+            'p_apellidos': apellidos,
+            'p_telefono': telefono,
+            'p_dni': dni,
+            'p_municipio_id': municipioId,
+            'p_licencia_taxi': licenciaTaxi,
+            'p_matricula': matricula,
+            'p_marca': marca,
+            'p_modelo': modelo,
+            'p_color': color,
+            'p_capacidad': capacidad.toString(),
+            'p_minusvalido': minusvalido,
+            'p_is_admin': isAdmin,
+          },
+        );
+        return;
+      }
 
-      final vehiculoId = vehiculoResponse['id'];
-
-      // 4. Crear taxista
-      await _supabase.from('taxistas').insert({
-        'id': userId,
-        'vehiculo_id': vehiculoId,
-        'municipio_id': municipioId,
-        'estado': 'disponible',
-        'is_admin': isAdmin,
-      });
-    } catch (e) {
       rethrow;
+    } catch (e) {
+      await _rollbackCreateTaxista(userId: userId);
+
+      rethrow;
+    }
+  }
+
+  Future<void> _validateCreateTaxistaData({
+    required String email,
+    required String dni,
+    required String telefono,
+    required String licenciaTaxi,
+    required String matricula,
+    required int municipioId,
+  }) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    final normalizedDni = dni.trim().toUpperCase();
+    final normalizedTelefono = telefono.trim();
+    final normalizedLicencia = licenciaTaxi.trim().toUpperCase();
+    final normalizedMatricula = matricula.trim().toUpperCase();
+
+    final existingByEmail = await _supabase
+        .from('usuarios')
+        .select('id')
+        .ilike('email', normalizedEmail)
+        .maybeSingle();
+    if (existingByEmail != null) {
+      throw Exception('usuarios_email_key: email duplicado');
+    }
+
+    final existingByDni = await _supabase
+        .from('usuarios')
+        .select('id')
+        .eq('dni', normalizedDni)
+        .maybeSingle();
+    if (existingByDni != null) {
+      throw Exception('usuarios_dni_key: dni duplicado');
+    }
+
+    if (normalizedTelefono.isNotEmpty) {
+      final existingByTelefono = await _supabase
+          .from('usuarios')
+          .select('id')
+          .eq('telefono', normalizedTelefono)
+          .maybeSingle();
+      if (existingByTelefono != null) {
+        throw Exception('usuarios_telefono_key: telefono duplicado');
+      }
+    }
+
+    final existingByLicencia = await _supabase
+        .from('vehiculos')
+        .select('id')
+        .eq('licencia_taxi', normalizedLicencia)
+        .maybeSingle();
+    if (existingByLicencia != null) {
+      throw Exception('vehiculos_licencia_taxi_key: licencia duplicada');
+    }
+
+    final existingByMatricula = await _supabase
+        .from('vehiculos')
+        .select('id')
+        .eq('matricula', normalizedMatricula)
+        .maybeSingle();
+    if (existingByMatricula != null) {
+      throw Exception('vehiculos_matricula_key: matricula duplicada');
+    }
+
+    final municipioExists = await _supabase
+        .from('municipios')
+        .select('id')
+        .eq('id', municipioId)
+        .maybeSingle();
+    if (municipioExists == null) {
+      throw Exception('taxistas_municipio_id_fkey: municipio inválido');
+    }
+  }
+
+  Future<void> _rollbackCreateTaxista({required String? userId}) async {
+    if (userId != null) {
+      try {
+        await _supabase.auth.admin.deleteUser(userId);
+      } catch (_) {}
     }
   }
 
   String _generateSecurePassword() {
     const chars =
         'AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0123456789!@#\$%^&*';
-    final random = DateTime.now().millisecondsSinceEpoch;
+    final random = Random.secure();
     final password = String.fromCharCodes(
-      List.generate(
-        16,
-        (index) => chars.codeUnitAt(random + index) % chars.length,
-      ),
+      List.generate(16, (_) => chars.codeUnitAt(random.nextInt(chars.length))),
     );
     return password;
   }
