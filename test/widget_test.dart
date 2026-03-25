@@ -1,30 +1,27 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gotaxi/data/services/auth_service.dart';
+import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
 
-import 'package:gotaxi/main.dart';
+class _NoopAuthService implements AuthService {
+  @override
+  Future<void> signIn({required String email, required String password}) async {}
+
+  @override
+  Future<void> signUp({
+    required String email,
+    required String password,
+    required Map<String, dynamic> data,
+  }) async {}
+}
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('AuthScreen renderiza en modo login', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      MaterialApp(home: AuthScreen(authService: _NoopAuthService())),
+    );
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('Iniciar Sesión'), findsOneWidget);
+    expect(find.text('Entrar'), findsOneWidget);
   });
 }

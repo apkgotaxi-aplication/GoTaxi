@@ -1,16 +1,24 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import './presentation/screens/auth/auth_screen.dart';
 import './presentation/screens/home/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: '.env');
+
+  final supabaseUrl = dotenv.env['SUPABASE_URL'] ?? '';
+  final supabaseAnonKey = dotenv.env['SUPABASE_ANON_KEY'] ?? '';
+
+  if (supabaseUrl.isEmpty || supabaseAnonKey.isEmpty) {
+    throw Exception(
+      'Faltan SUPABASE_URL o SUPABASE_ANON_KEY en el archivo .env',
+    );
+  }
 
   // Supabase credentials
-  await Supabase.initialize(
-    url: 'https://vkewprpynejnmobgpbiu.supabase.co',
-    anonKey: 'sb_publishable_0wl332igFmJN2iRCAJFqTg_KecNU5-b',
-  );
+  await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
 
   runApp(const MyApp());
 }
@@ -22,7 +30,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Supabase Auth',
+      title: 'GoTaxi',
       theme: ThemeData.dark(),
       home: const SplashScreen(),
     );

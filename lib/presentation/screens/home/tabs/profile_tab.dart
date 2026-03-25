@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:gotaxi/presentation/screens/home/about_us_screen.dart';
 import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
+import 'package:gotaxi/presentation/screens/home/faq_screen.dart';
+import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
+import 'package:gotaxi/presentation/fragments/profile/admin_panel_fragment.dart';
+import '../../../../utils/profile/user_personal_data_utils.dart';
 
 class ProfileTab extends StatefulWidget {
   const ProfileTab({super.key});
@@ -21,7 +26,7 @@ class _ProfileTabState extends State<ProfileTab> {
   bool _loading = true;
   bool _saving = false;
   bool _isCliente = false;
-  bool _editMode = false;
+  bool _isAdmin = false;
   String? _error;
   String _userRole = '';
 
@@ -44,14 +49,12 @@ class _ProfileTabState extends State<ProfileTab> {
         return;
       }
 
-      // Cargar datos del usuario desde user_metadata
       final metadata = user.userMetadata ?? {};
       _nombreController.text = metadata['nombre'] ?? '';
       _apellidosController.text = metadata['apellidos'] ?? '';
       _emailController.text = user.email ?? '';
       _telefonoController.text = metadata['telefono'] ?? '';
 
-      // Verificar rol del usuario en la tabla 'usuarios'
       final response = await _supabase
           .from('usuarios')
           .select('rol')
@@ -60,10 +63,35 @@ class _ProfileTabState extends State<ProfileTab> {
 
       if (response != null && response['rol'] != null) {
         _userRole = response['rol'].toString();
-        _isCliente = _userRole == 'cliente';
+        _isCliente = UserPersonalDataUtils.isCliente(_userRole);
       } else {
         _isCliente = false;
         _userRole = 'desconocido';
+      }
+
+      // Verificar si es admin - puede ser cliente admin o taxista admin
+      if (_isCliente) {
+        // Buscar is_admin en tabla clientes
+        final clienteResponse = await _supabase
+            .from('clientes')
+            .select('is_admin')
+            .eq('id', user.id)
+            .maybeSingle();
+
+        if (clienteResponse != null) {
+          _isAdmin = clienteResponse['is_admin'] == true;
+        }
+      } else if (_userRole == 'taxista') {
+        // Buscar is_admin en tabla taxistas
+        final taxistaResponse = await _supabase
+            .from('taxistas')
+            .select('is_admin')
+            .eq('id', user.id)
+            .maybeSingle();
+
+        if (taxistaResponse != null) {
+          _isAdmin = taxistaResponse['is_admin'] == true;
+        }
       }
     } catch (e) {
       _error = 'Error al cargar el perfil: $e';
@@ -81,7 +109,6 @@ class _ProfileTabState extends State<ProfileTab> {
       final user = _supabase.auth.currentUser;
       if (user == null) return;
 
-      // Actualizar user_metadata en Supabase Auth
       await _supabase.auth.updateUser(
         UserAttributes(
           email: _emailController.text.trim(),
@@ -93,7 +120,6 @@ class _ProfileTabState extends State<ProfileTab> {
         ),
       );
 
-      // Actualizar en la tabla 'usuarios'
       await _supabase
           .from('usuarios')
           .update({
@@ -105,7 +131,6 @@ class _ProfileTabState extends State<ProfileTab> {
           .eq('id', user.id);
 
       if (mounted) {
-        setState(() => _editMode = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Row(
@@ -173,13 +198,452 @@ class _ProfileTabState extends State<ProfileTab> {
     }
   }
 
-  String _getInitials() {
-    final nombre = _nombreController.text.trim();
-    final apellidos = _apellidosController.text.trim();
-    String initials = '';
-    if (nombre.isNotEmpty) initials += nombre[0].toUpperCase();
-    if (apellidos.isNotEmpty) initials += apellidos[0].toUpperCase();
-    return initials.isEmpty ? '?' : initials;
+  void _showMisDatosSheet() {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: MediaQuery.of(context).size.height * 0.85,
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade400,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Mis datos',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    children: [
+                      _buildEditField(
+                        context: context,
+                        controller: _nombreController,
+                        label: 'Nombre',
+                        icon: Icons.person_outline,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildEditField(
+                        context: context,
+                        controller: _apellidosController,
+                        label: 'Apellidos',
+                        icon: Icons.people_outline,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildEditField(
+                        context: context,
+                        controller: _emailController,
+                        label: 'Correo electrónico',
+                        icon: Icons.email_outlined,
+                        keyboardType: TextInputType.emailAddress,
+                      ),
+                      const SizedBox(height: 16),
+                      _buildEditField(
+                        context: context,
+                        controller: _telefonoController,
+                        label: 'Teléfono',
+                        icon: Icons.phone_outlined,
+                        keyboardType: TextInputType.phone,
+                      ),
+                      const SizedBox(height: 32),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: _saving ? null : _saveProfile,
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: _saving
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text(
+                                  'Guardar cambios',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                        ),
+                      ),
+                      const SizedBox(height: 40),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showMisViajesSheet() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const RideHistoryScreen()));
+  }
+
+  void _showFavoritosSheet() {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: MediaQuery.of(context).size.height * 0.85,
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade400,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Mis favoritos',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Expanded(
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.star, size: 64, color: Colors.grey),
+                    SizedBox(height: 16),
+                    Text(
+                      'No tienes favoritos guardados',
+                      style: TextStyle(fontSize: 16, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showMetodosPagoSheet() {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: MediaQuery.of(context).size.height * 0.85,
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade400,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Métodos de pago',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Expanded(
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.credit_card, size: 64, color: Colors.grey),
+                    SizedBox(height: 16),
+                    Text(
+                      'No tienes métodos de pago guardados',
+                      style: TextStyle(fontSize: 16, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showNotificacionesSheet() {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: MediaQuery.of(context).size.height * 0.85,
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade400,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Notificaciones',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Expanded(
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.notifications, size: 64, color: Colors.grey),
+                    SizedBox(height: 16),
+                    Text(
+                      'No tienes notificaciones',
+                      style: TextStyle(fontSize: 16, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showAyudaSheet() {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: MediaQuery.of(context).size.height * 0.85,
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade400,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Ayuda y soporte',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                children: [
+                  _buildHelpItem(
+                    icon: Icons.help_outline,
+                    title: 'Preguntas frecuentes',
+                    subtitle: 'Resuelve tus dudas comunes',
+                    onTap: _openFaqScreen,
+                  ),
+                  _buildHelpItem(
+                    icon: Icons.chat_bubble_outline,
+                    title: 'Chatear con soporte',
+                    subtitle: 'Habla con nuestro equipo',
+                    onTap: () {},
+                  ),
+                  _buildHelpItem(
+                    icon: Icons.email_outlined,
+                    title: 'Enviar correo',
+                    subtitle: 'contacto@gotaxi.com',
+                    onTap: () {},
+                  ),
+                  _buildHelpItem(
+                    icon: Icons.phone_outlined,
+                    title: 'Llamar al soporte',
+                    subtitle: '+34 900 000 000',
+                    onTap: () {},
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openFaqScreen() {
+    Navigator.of(context).pop();
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const FaqScreen()));
+  }
+
+  void _openAboutUsScreen() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const AboutUsScreen()));
+  }
+
+  Widget _buildEditField({
+    required BuildContext context,
+    required TextEditingController controller,
+    required String label,
+    required IconData icon,
+    TextInputType? keyboardType,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return TextFormField(
+      controller: controller,
+      keyboardType: keyboardType,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon),
+        filled: true,
+        fillColor: colorScheme.surface,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: colorScheme.outline),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(
+            color: colorScheme.outline.withValues(alpha: 0.5),
+          ),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: colorScheme.primary, width: 2),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHelpItem({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: ListTile(
+        leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
+        title: Text(title),
+        subtitle: Text(subtitle),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: onTap,
+      ),
+    );
   }
 
   @override
@@ -218,10 +682,60 @@ class _ProfileTabState extends State<ProfileTab> {
       );
     }
 
+    final viajesItems = [
+      _MenuItem(
+        icon: Icons.directions_car,
+        title: 'Historial de viajes',
+        color: Colors.green,
+        onTap: _showMisViajesSheet,
+      ),
+      _MenuItem(
+        icon: Icons.star_outline,
+        title: 'Favoritos',
+        color: Colors.amber,
+        onTap: _showFavoritosSheet,
+      ),
+      _MenuItem(
+        icon: Icons.notifications_outlined,
+        title: 'Notificaciones',
+        color: Colors.orange,
+        onTap: _showNotificacionesSheet,
+      ),
+    ];
+
+    final miInformacionItems = [
+      _MenuItem(
+        icon: Icons.person_outline,
+        title: 'Mis datos',
+        color: Colors.blue,
+        onTap: _showMisDatosSheet,
+      ),
+      _MenuItem(
+        icon: Icons.credit_card,
+        title: 'Pago',
+        color: Colors.purple,
+        onTap: _showMetodosPagoSheet,
+      ),
+    ];
+
+    final otrosItems = [
+      _MenuItem(
+        icon: Icons.help_outline,
+        title: 'Ayuda',
+        color: Colors.teal,
+        onTap: _showAyudaSheet,
+      ),
+      _MenuItem(
+        icon: Icons.info_outline,
+        title: 'Acerca de',
+        color: Colors.indigo,
+        onTap: _openAboutUsScreen,
+      ),
+    ];
+
     return Scaffold(
       body: CustomScrollView(
         slivers: [
-          // Header con avatar y nombre
           SliverToBoxAdapter(
             child: Container(
               width: double.infinity,
@@ -241,7 +755,6 @@ class _ProfileTabState extends State<ProfileTab> {
                   padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
                   child: Column(
                     children: [
-                      // Avatar
                       Container(
                         width: 100,
                         height: 100,
@@ -262,7 +775,10 @@ class _ProfileTabState extends State<ProfileTab> {
                         ),
                         child: Center(
                           child: Text(
-                            _getInitials(),
+                            UserPersonalDataUtils.getInitials(
+                              _nombreController.text.trim(),
+                              _apellidosController.text.trim(),
+                            ),
                             style: const TextStyle(
                               fontSize: 36,
                               fontWeight: FontWeight.bold,
@@ -272,7 +788,6 @@ class _ProfileTabState extends State<ProfileTab> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      // Nombre completo
                       Text(
                         '${_nombreController.text} ${_apellidosController.text}'
                             .trim(),
@@ -282,28 +797,24 @@ class _ProfileTabState extends State<ProfileTab> {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      // Rol badge
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 16,
                           vertical: 6,
                         ),
                         decoration: BoxDecoration(
-                          color: _isCliente
-                              ? Colors.green.withValues(alpha: 0.2)
-                              : Colors.orange.withValues(alpha: 0.2),
+                          color: UserPersonalDataUtils.getRoleBadgeColor(
+                            _isCliente,
+                          ).withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(20),
                           border: Border.all(
-                            color: _isCliente
-                                ? Colors.green.withValues(alpha: 0.5)
-                                : Colors.orange.withValues(alpha: 0.5),
+                            color: UserPersonalDataUtils.getRoleBadgeColor(
+                              _isCliente,
+                            ).withValues(alpha: 0.5),
                           ),
                         ),
                         child: Text(
-                          _userRole.isNotEmpty
-                              ? _userRole[0].toUpperCase() +
-                                    _userRole.substring(1)
-                              : 'Sin rol',
+                          UserPersonalDataUtils.formatRole(_userRole),
                           style: TextStyle(
                             color: _isCliente
                                 ? Colors.green.shade300
@@ -319,18 +830,36 @@ class _ProfileTabState extends State<ProfileTab> {
               ),
             ),
           ),
-
-          // Contenido del perfil
           SliverToBoxAdapter(
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: _isCliente
-                  ? _buildClienteProfile(colorScheme)
-                  : _buildNonClienteView(colorScheme),
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                children: [
+                  _buildMenuSection(
+                    context: context,
+                    title: 'Viajes',
+                    items: viajesItems,
+                  ),
+                  const SizedBox(height: 14),
+                  _buildMenuSection(
+                    context: context,
+                    title: 'Mi informacion',
+                    items: miInformacionItems,
+                  ),
+                  const SizedBox(height: 14),
+                  if (_isAdmin) ...[
+                    const AdminPanelFragment(),
+                    const SizedBox(height: 14),
+                  ],
+                  _buildMenuSection(
+                    context: context,
+                    title: 'Otros',
+                    items: otrosItems,
+                  ),
+                ],
+              ),
             ),
           ),
-
-          // Botón cerrar sesión
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
@@ -356,268 +885,61 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  Widget _buildClienteProfile(ColorScheme colorScheme) {
-    return Form(
-      key: _formKey,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Sección header con botón editar
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Información personal',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              if (!_editMode)
-                IconButton(
-                  onPressed: () => setState(() => _editMode = true),
-                  icon: Icon(Icons.edit, color: colorScheme.primary),
-                  tooltip: 'Editar perfil',
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
+  Widget _buildMenuSection({
+    required BuildContext context,
+    required String title,
+    required List<_MenuItem> items,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
 
-          // Campo Nombre
-          _buildProfileField(
-            controller: _nombreController,
-            label: 'Nombre',
-            icon: Icons.person_outline,
-            enabled: _editMode,
-            validator: (value) {
-              if (value == null || value.trim().isEmpty) {
-                return 'El nombre es obligatorio';
-              }
-              return null;
-            },
-          ),
-          const SizedBox(height: 16),
-
-          // Campo Apellidos
-          _buildProfileField(
-            controller: _apellidosController,
-            label: 'Apellidos',
-            icon: Icons.people_outline,
-            enabled: _editMode,
-            validator: (value) {
-              if (value == null || value.trim().isEmpty) {
-                return 'Los apellidos son obligatorios';
-              }
-              return null;
-            },
-          ),
-          const SizedBox(height: 16),
-
-          // Campo Email
-          _buildProfileField(
-            controller: _emailController,
-            label: 'Correo electrónico',
-            icon: Icons.email_outlined,
-            enabled: _editMode,
-            keyboardType: TextInputType.emailAddress,
-            validator: (value) {
-              if (value == null || value.trim().isEmpty) {
-                return 'El email es obligatorio';
-              }
-              if (!RegExp(
-                r'^[\w\-\.]+@([\w\-]+\.)+[\w\-]{2,4}$',
-              ).hasMatch(value.trim())) {
-                return 'Introduce un email válido';
-              }
-              return null;
-            },
-          ),
-          const SizedBox(height: 16),
-
-          // Campo Teléfono
-          _buildProfileField(
-            controller: _telefonoController,
-            label: 'Teléfono',
-            icon: Icons.phone_outlined,
-            enabled: _editMode,
-            keyboardType: TextInputType.phone,
-            validator: (value) {
-              if (value != null && value.trim().isNotEmpty) {
-                if (!RegExp(r'^\+?[0-9]{6,15}$').hasMatch(value.trim())) {
-                  return 'Introduce un teléfono válido';
-                }
-              }
-              return null;
-            },
-          ),
-
-          // Botones de acción en modo edición
-          if (_editMode) ...[
-            const SizedBox(height: 28),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _saving
-                        ? null
-                        : () {
-                            setState(() => _editMode = false);
-                            _loadProfile();
-                          },
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: const Text('Cancelar'),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: _saving ? null : _saveProfile,
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: _saving
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text(
-                            'Guardar cambios',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildNonClienteView(ColorScheme colorScheme) {
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 8),
+          child: Text(
+            title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+        ),
         Card(
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(14),
           ),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              children: [
-                Icon(Icons.info_outline, size: 48, color: colorScheme.primary),
-                const SizedBox(height: 12),
-                const Text(
-                  'Perfil no editable',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'La edición de perfil solo está disponible para usuarios con rol de cliente.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey.shade400, fontSize: 14),
-                ),
+          child: Column(
+            children: [
+              for (var index = 0; index < items.length; index++) ...[
+                _buildSectionItem(context: context, item: items[index]),
+                if (index != items.length - 1)
+                  Divider(
+                    height: 1,
+                    color: colorScheme.outline.withValues(alpha: 0.2),
+                  ),
               ],
-            ),
+            ],
           ),
-        ),
-        const SizedBox(height: 16),
-        _buildReadOnlyInfo(
-          'Email',
-          _emailController.text,
-          Icons.email_outlined,
-        ),
-        _buildReadOnlyInfo(
-          'Nombre',
-          _nombreController.text,
-          Icons.person_outline,
-        ),
-        _buildReadOnlyInfo(
-          'Apellidos',
-          _apellidosController.text,
-          Icons.people_outline,
-        ),
-        _buildReadOnlyInfo(
-          'Teléfono',
-          _telefonoController.text,
-          Icons.phone_outlined,
         ),
       ],
     );
   }
 
-  Widget _buildReadOnlyInfo(String label, String value, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Card(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: ListTile(
-          leading: Icon(icon, color: Theme.of(context).colorScheme.primary),
-          title: Text(
-            label,
-            style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
-          ),
-          subtitle: Text(
-            value.isNotEmpty ? value : 'No especificado',
-            style: const TextStyle(fontSize: 16),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildProfileField({
-    required TextEditingController controller,
-    required String label,
-    required IconData icon,
-    required bool enabled,
-    TextInputType? keyboardType,
-    String? Function(String?)? validator,
+  Widget _buildSectionItem({
+    required BuildContext context,
+    required _MenuItem item,
   }) {
-    return TextFormField(
-      controller: controller,
-      enabled: enabled,
-      keyboardType: keyboardType,
-      validator: validator,
-      style: TextStyle(color: enabled ? null : Colors.grey.shade400),
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon),
-        filled: true,
-        fillColor: enabled
-            ? Theme.of(context).colorScheme.surface
-            : Theme.of(context).colorScheme.surface.withValues(alpha: 0.5),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Theme.of(context).colorScheme.outline),
+    return ListTile(
+      leading: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: item.color.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(10),
         ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(
-            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.5),
-          ),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(
-            color: Theme.of(context).colorScheme.primary,
-            width: 2,
-          ),
-        ),
-        disabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(
-            color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
-          ),
-        ),
+        child: Icon(item.icon, color: item.color, size: 20),
       ),
+      title: Text(item.title),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: item.onTap,
     );
   }
 
@@ -629,4 +951,18 @@ class _ProfileTabState extends State<ProfileTab> {
     _telefonoController.dispose();
     super.dispose();
   }
+}
+
+class _MenuItem {
+  final IconData icon;
+  final String title;
+  final Color color;
+  final VoidCallback onTap;
+
+  _MenuItem({
+    required this.icon,
+    required this.title,
+    required this.color,
+    required this.onTap,
+  });
 }
