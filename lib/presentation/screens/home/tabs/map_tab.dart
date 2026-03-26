@@ -6,6 +6,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:gotaxi/data/services/ride_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:gotaxi/utils/pricing_constants.dart';
 import 'package:gotaxi/utils/places_autocomplete_service.dart';
@@ -23,9 +24,12 @@ class _MapTabState extends State<MapTab> {
   String get _googleMapsApiKey => dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
 
   late PlacesAutocompleteService _placesService;
+  final RideService _rideService = RideService();
 
   GoogleMapController? _mapController;
   LatLng? _currentPosition;
+  LatLng? _lastOrigin;
+  LatLng? _lastDestination;
   final TextEditingController _originController = TextEditingController(
     text: _defaultOriginText,
   );
@@ -35,6 +39,7 @@ class _MapTabState extends State<MapTab> {
 
   bool _loading = true;
   bool _loadingRoute = false;
+  bool _requestingRide = false;
   String? _error;
   String? _routeError;
   String? _distanceText;
@@ -327,6 +332,8 @@ class _MapTabState extends State<MapTab> {
 
       if (!mounted) return;
       setState(() {
+        _lastOrigin = origin;
+        _lastDestination = destination;
         _distanceText = (distance?['text'] as String?) ?? '-';
         _durationText = (duration?['text'] as String?) ?? '-';
         _distanceMeters = distanceMeters;
@@ -373,6 +380,98 @@ class _MapTabState extends State<MapTab> {
       if (mounted) {
         setState(() {
           _loadingRoute = false;
+        });
+      }
+    }
+  }
+
+  Future<String> _resolveOriginCity(LatLng origin) async {
+    try {
+      final placemarks = await placemarkFromCoordinates(
+        origin.latitude,
+        origin.longitude,
+      );
+      if (placemarks.isEmpty) return '';
+      return (placemarks.first.locality ?? '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _createRide({required bool isReservation}) async {
+    if (_loadingRoute || _requestingRide) return;
+
+    if (_distanceMeters == null ||
+        _durationSeconds == null ||
+        _estimatedFareEur == null) {
+      await _searchRoute();
+    }
+
+    if (!mounted) return;
+
+    final origin = _lastOrigin;
+    final destination = _lastDestination;
+    final distanceMeters = _distanceMeters;
+    final durationSeconds = _durationSeconds;
+    final fare = _estimatedFareEur;
+
+    if (origin == null ||
+        destination == null ||
+        distanceMeters == null ||
+        durationSeconds == null ||
+        fare == null) {
+      setState(() {
+        _routeError =
+            'Calcula primero una ruta valida antes de solicitar el servicio.';
+      });
+      return;
+    }
+
+    setState(() {
+      _requestingRide = true;
+      _routeError = null;
+    });
+
+    try {
+      final ciudadOrigen = await _resolveOriginCity(origin);
+      final duracionMinutos = (durationSeconds / 60).round();
+      final distanciaKm = distanceMeters / 1000;
+
+      final result = await _rideService.createRideAssignment(
+        origen: _originController.text.trim().isEmpty
+            ? '${origin.latitude},${origin.longitude}'
+            : _originController.text.trim(),
+        destino: _destinationController.text.trim(),
+        numPasajeros: 1,
+        anotaciones: '',
+        distanciaKm: distanciaKm,
+        precio: fare,
+        duracionMin: duracionMinutos,
+        minusvalido: false,
+        ciudadOrigen: ciudadOrigen,
+        fechaRecogida: isReservation
+            ? DateTime.now().add(const Duration(minutes: 15))
+            : DateTime.now(),
+      );
+
+      if (!mounted) return;
+
+      final color = result.success
+          ? Theme.of(context).colorScheme.primary
+          : Theme.of(context).colorScheme.error;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.message), backgroundColor: color),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _routeError = e.toString().replaceFirst('Exception: ', '');
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _requestingRide = false;
         });
       }
     }
@@ -690,6 +789,10 @@ class _MapTabState extends State<MapTab> {
                   const SizedBox(height: 10),
                   const LinearProgressIndicator(),
                 ],
+                if (_requestingRide) ...[
+                  const SizedBox(height: 10),
+                  const LinearProgressIndicator(),
+                ],
                 if (_routeError != null) ...[
                   const SizedBox(height: 10),
                   Align(
@@ -753,23 +856,36 @@ class _MapTabState extends State<MapTab> {
                   ],
                 ],
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton(
-                        onPressed: _searchRoute,
-                        child: const Text('Pedir ahora'),
+                if (_distanceText == null || _durationText == null) ...[
+                  FilledButton(
+                    onPressed: (_loadingRoute || _requestingRide)
+                        ? null
+                        : _searchRoute,
+                    child: const Text('Calcular ruta'),
+                  ),
+                ] else ...[
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: (_requestingRide)
+                              ? null
+                              : () => _createRide(isReservation: false),
+                          child: const Text('Pedir ahora'),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () {},
-                        child: const Text('Reservar'),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: (_requestingRide)
+                              ? null
+                              : () => _createRide(isReservation: true),
+                          child: const Text('Reservar viaje'),
+                        ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

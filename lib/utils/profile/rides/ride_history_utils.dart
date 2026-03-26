@@ -1,10 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-const _ridesTable = 'viajes';
-const _accountIdColumn = 'user_id';
-const _driverIdColumn = 'driver_id';
-const _orderByColumn = 'created_at';
-
 Future<List<Map<String, dynamic>>> fetchCurrentUserRideHistory({
   int limit = 50,
 }) async {
@@ -15,30 +10,12 @@ Future<List<Map<String, dynamic>>> fetchCurrentUserRideHistory({
     throw StateError('No hay una cuenta iniciada para consultar viajes.');
   }
 
-  final response = await supabase
-      .from(_ridesTable)
-      .select(
-        'id, created_at, '
-        'usuario:user_id(nombre, apellidos), '
-        'taxista:driver_id(nombre, apellidos)',
-      )
-      .eq(_accountIdColumn, currentUser.id)
-      .order(_orderByColumn, ascending: false)
-      .limit(limit);
+  final response = await supabase.rpc(
+    'get_user_ride_history',
+    params: {'p_user_id': currentUser.id, 'p_limit': limit},
+  );
 
-  return List<Map<String, dynamic>>.from(response).map((ride) {
-    final userData = ride['usuario'] as Map<String, dynamic>?;
-    final driverData = ride['taxista'] as Map<String, dynamic>?;
-
-    return {
-      'id': ride['id'],
-      'created_at': ride['created_at'],
-      'user_nombre': userData?['nombre'],
-      'user_apellidos': userData?['apellidos'],
-      'driver_nombre': driverData?['nombre'],
-      'driver_apellidos': driverData?['apellidos'],
-    };
-  }).toList();
+  return List<Map<String, dynamic>>.from(response);
 }
 
 Future<List<Map<String, dynamic>>> fetchCurrentUserDriverRideHistory({
@@ -51,30 +28,12 @@ Future<List<Map<String, dynamic>>> fetchCurrentUserDriverRideHistory({
     throw StateError('No hay una cuenta iniciada para consultar viajes.');
   }
 
-  final response = await supabase
-      .from(_ridesTable)
-      .select(
-        'id, created_at, '
-        'usuario:user_id(nombre, apellidos), '
-        'taxista:driver_id(nombre, apellidos)',
-      )
-      .eq(_driverIdColumn, currentUser.id)
-      .order(_orderByColumn, ascending: false)
-      .limit(limit);
+  final response = await supabase.rpc(
+    'get_driver_ride_history',
+    params: {'p_driver_id': currentUser.id, 'p_limit': limit},
+  );
 
-  return List<Map<String, dynamic>>.from(response).map((ride) {
-    final userData = ride['usuario'] as Map<String, dynamic>?;
-    final driverData = ride['taxista'] as Map<String, dynamic>?;
-
-    return {
-      'id': ride['id'],
-      'created_at': ride['created_at'],
-      'user_nombre': userData?['nombre'],
-      'user_apellidos': userData?['apellidos'],
-      'driver_nombre': driverData?['nombre'],
-      'driver_apellidos': driverData?['apellidos'],
-    };
-  }).toList();
+  return List<Map<String, dynamic>>.from(response);
 }
 
 Future<bool> isCurrentUserTaxista() async {
