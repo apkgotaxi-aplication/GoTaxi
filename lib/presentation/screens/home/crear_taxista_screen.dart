@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:gotaxi/data/services/google_places_location_service.dart';
 import 'package:gotaxi/data/services/taxista_service.dart';
 import 'package:gotaxi/domain/validators/dni_validator.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class CrearTaxistaScreen extends StatefulWidget {
   const CrearTaxistaScreen({super.key});
@@ -29,6 +30,14 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
   final _colorController = TextEditingController();
   final _capacidadController = TextEditingController();
 
+  final _emailFocusNode = FocusNode();
+  final _telefonoFocusNode = FocusNode();
+  final _dniFocusNode = FocusNode();
+  final _licenciaTaxiFocusNode = FocusNode();
+  final _matriculaFocusNode = FocusNode();
+  final _provinciaFocusNode = FocusNode();
+  final _municipioFocusNode = FocusNode();
+
   // Estado general
   int _currentStep = 0;
   bool _loading = false;
@@ -50,6 +59,9 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
   bool _showMunicipioDropdown = false;
   bool _selectingProvincia = false;
   bool _selectingMunicipio = false;
+
+  String? _backendErrorField;
+  String? _backendErrorMessage;
 
   final _formKey1 = GlobalKey<FormState>();
   final _formKey2 = GlobalKey<FormState>();
@@ -131,6 +143,10 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
       _selectedMunicipio = null;
       _municipioSearchController.clear();
       _municipiosSugerencias = [];
+      if (_backendErrorField == 'provincia') {
+        _backendErrorField = null;
+        _backendErrorMessage = null;
+      }
     });
     _selectingProvincia = false;
   }
@@ -141,13 +157,21 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
       _selectedMunicipio = municipio;
       _municipioSearchController.text = municipio.mainText;
       _showMunicipioDropdown = false;
+      if (_backendErrorField == 'municipio') {
+        _backendErrorField = null;
+        _backendErrorMessage = null;
+      }
     });
     _selectingMunicipio = false;
   }
 
   Future<void> _createTaxista() async {
-    if (!_formKey1.currentState!.validate() ||
-        !_formKey2.currentState!.validate()) {
+    _clearBackendError();
+
+    final formStep1Valid = _formKey1.currentState?.validate() ?? true;
+    final formStep2Valid = _formKey2.currentState?.validate() ?? false;
+
+    if (!formStep1Valid || !formStep2Valid) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Por favor, rellena todos los campos correctamente'),
@@ -157,15 +181,17 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
     }
 
     if (_selectedProvincia == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Por favor, selecciona una provincia')),
+      _applyBackendFieldError(
+        field: 'provincia',
+        message: 'Campo Provincia: selecciona una provincia válida.',
       );
       return;
     }
 
     if (_selectedMunicipio == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Por favor, selecciona un municipio')),
+      _applyBackendFieldError(
+        field: 'municipio',
+        message: 'Campo Municipio: selecciona un municipio válido.',
       );
       return;
     }
@@ -243,22 +269,226 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
         );
         Navigator.pop(context);
       }
+    } on AuthException catch (e) {
+      if (mounted) {
+        final mapped = _mapCreateTaxistaError(e.message);
+        _applyBackendFieldError(field: mapped.field, message: mapped.message);
+      }
+    } on PostgrestException catch (e) {
+      if (mounted) {
+        final rawError = [
+          e.code,
+          e.message,
+          e.details,
+          e.hint,
+        ].whereType<String>().join(' ');
+        final mapped = _mapCreateTaxistaError(rawError);
+        _applyBackendFieldError(field: mapped.field, message: mapped.message);
+      }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al crear taxista: $e'),
-            backgroundColor: Colors.red.shade700,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
-        );
+        final mapped = _mapCreateTaxistaError(e.toString());
+        _applyBackendFieldError(field: mapped.field, message: mapped.message);
       }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  void _clearBackendError() {
+    if (_backendErrorField == null && _backendErrorMessage == null) return;
+    setState(() {
+      _backendErrorField = null;
+      _backendErrorMessage = null;
+    });
+  }
+
+  void _clearBackendErrorIfMatches(String field) {
+    if (_backendErrorField != field) return;
+    _clearBackendError();
+  }
+
+  void _applyBackendFieldError({String? field, required String message}) {
+    setState(() {
+      _backendErrorField = field;
+      _backendErrorMessage = message;
+      if (field == 'licenciaTaxi' || field == 'matricula') {
+        _currentStep = 1;
+      }
+      if (field == 'provincia' || field == 'municipio') {
+        _currentStep = 0;
+      }
+    });
+
+    _focusField(field);
+    _showCreateTaxistaError(message);
+  }
+
+  void _focusField(String? field) {
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      switch (field) {
+        case 'email':
+          _emailFocusNode.requestFocus();
+          break;
+        case 'telefono':
+          _telefonoFocusNode.requestFocus();
+          break;
+        case 'dni':
+          _dniFocusNode.requestFocus();
+          break;
+        case 'licenciaTaxi':
+          _licenciaTaxiFocusNode.requestFocus();
+          break;
+        case 'matricula':
+          _matriculaFocusNode.requestFocus();
+          break;
+        case 'provincia':
+          _provinciaFocusNode.requestFocus();
+          break;
+        case 'municipio':
+          _municipioFocusNode.requestFocus();
+          break;
+      }
+    });
+  }
+
+  void _showCreateTaxistaError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red.shade700,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
+
+  ({String? field, String message}) _mapCreateTaxistaError(String rawError) {
+    final error = rawError.toLowerCase();
+
+    if (error.contains('user already registered') ||
+        error.contains('already registered')) {
+      return (
+        field: 'email',
+        message:
+            'Campo Email: este correo ya existe en autenticación. Se intentará reutilizar para crear el taxista.',
+      );
+    }
+
+    if (error.contains('usuarios_id_fkey') ||
+        error.contains('usuario no encontrado')) {
+      return (
+        field: 'email',
+        message:
+            'Campo Email: existe en autenticación pero faltaba su perfil. Reintenta crear el taxista.',
+      );
+    }
+
+    if (error.contains('unexpected failure') ||
+        error.contains('please check server logs') ||
+        error.contains('sqlstate 42501') ||
+        error.contains('permission denied for table usuarios')) {
+      return (
+        field: null,
+        message:
+            'Error de permisos en el alta de usuario (Auth/BD). Ya está corregido en servidor; vuelve a intentarlo.',
+      );
+    }
+
+    if (error.contains('email') &&
+        (error.contains('already') ||
+            error.contains('exists') ||
+            error.contains('duplicate') ||
+            error.contains('registered'))) {
+      return (
+        field: 'email',
+        message: 'Campo Email: ya existe un usuario con ese correo.',
+      );
+    }
+
+    if (error.contains('usuarios_email_key')) {
+      return (
+        field: 'email',
+        message: 'Campo Email: ya existe un usuario con ese correo.',
+      );
+    }
+
+    if (error.contains('dni') &&
+        (error.contains('duplicate') || error.contains('unique'))) {
+      return (field: 'dni', message: 'Campo DNI/NIE: ya está registrado.');
+    }
+
+    if (error.contains('usuarios_dni_key')) {
+      return (field: 'dni', message: 'Campo DNI/NIE: ya está registrado.');
+    }
+
+    if (error.contains('telefono') &&
+        (error.contains('duplicate') || error.contains('unique'))) {
+      return (
+        field: 'telefono',
+        message: 'Campo Teléfono: ya está registrado.',
+      );
+    }
+
+    if (error.contains('usuarios_telefono_key')) {
+      return (
+        field: 'telefono',
+        message: 'Campo Teléfono: ya está registrado.',
+      );
+    }
+
+    if (error.contains('matricula') &&
+        (error.contains('duplicate') || error.contains('unique'))) {
+      return (
+        field: 'matricula',
+        message: 'Campo Matrícula: ya está registrada.',
+      );
+    }
+
+    if (error.contains('vehiculos_matricula_key')) {
+      return (
+        field: 'matricula',
+        message: 'Campo Matrícula: ya está registrada.',
+      );
+    }
+
+    if (error.contains('licencia_taxi') || error.contains('licencia')) {
+      if (error.contains('duplicate') || error.contains('unique')) {
+        return (
+          field: 'licenciaTaxi',
+          message: 'Campo Licencia de Taxi: ya está registrada.',
+        );
+      }
+    }
+
+    if (error.contains('vehiculos_licencia_taxi_key')) {
+      return (
+        field: 'licenciaTaxi',
+        message: 'Campo Licencia de Taxi: ya está registrada.',
+      );
+    }
+
+    if (error.contains('municipio_id') || error.contains('municipio')) {
+      return (
+        field: 'municipio',
+        message: 'Campo Municipio: selecciona un municipio válido.',
+      );
+    }
+
+    if (error.contains('rangeerror')) {
+      return (
+        field: null,
+        message:
+            'Error interno al generar credenciales del taxista. Inténtalo de nuevo.',
+      );
+    }
+
+    return (
+      field: null,
+      message:
+          'No se pudo crear el taxista. Error técnico: ${rawError.length > 120 ? '${rawError.substring(0, 120)}...' : rawError}',
+    );
   }
 
   @override
@@ -276,6 +506,13 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
     _capacidadController.dispose();
     _provinciaSearchController.dispose();
     _municipioSearchController.dispose();
+    _emailFocusNode.dispose();
+    _telefonoFocusNode.dispose();
+    _dniFocusNode.dispose();
+    _licenciaTaxiFocusNode.dispose();
+    _matriculaFocusNode.dispose();
+    _provinciaFocusNode.dispose();
+    _municipioFocusNode.dispose();
     super.dispose();
   }
 
@@ -473,6 +710,8 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
             controller: _emailController,
             label: 'Email',
             icon: Icons.email_outlined,
+            fieldKey: 'email',
+            focusNode: _emailFocusNode,
             keyboardType: TextInputType.emailAddress,
             validator: (v) {
               if (v?.isEmpty ?? true) return 'El email es obligatorio';
@@ -485,6 +724,8 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
             controller: _telefonoController,
             label: 'Teléfono',
             icon: Icons.phone_outlined,
+            fieldKey: 'telefono',
+            focusNode: _telefonoFocusNode,
             keyboardType: TextInputType.phone,
             validator: (v) =>
                 v?.isEmpty ?? true ? 'El teléfono es obligatorio' : null,
@@ -494,6 +735,8 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
             controller: _dniController,
             label: 'DNI/NIE',
             icon: Icons.card_giftcard_outlined,
+            fieldKey: 'dni',
+            focusNode: _dniFocusNode,
             validator: (v) {
               if (v?.isEmpty ?? true) return 'El DNI es obligatorio';
               if (!validarDniNie(v!)) return 'DNI/NIE inválido';
@@ -512,6 +755,8 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
             icon: Icons.location_on_outlined,
             controller: _provinciaSearchController,
             selectedValue: _selectedProvincia?.mainText,
+            fieldKey: 'provincia',
+            focusNode: _provinciaFocusNode,
             showDropdown: _showProvinciaDropdown,
             suggestions: _provinciasSugerencias,
             onChanged: _searchProvincias,
@@ -524,6 +769,8 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
             icon: Icons.location_city_outlined,
             controller: _municipioSearchController,
             selectedValue: _selectedMunicipio?.mainText,
+            fieldKey: 'municipio',
+            focusNode: _municipioFocusNode,
             showDropdown: _showMunicipioDropdown && _selectedProvincia != null,
             suggestions: _municipiosSugerencias,
             onChanged: _selectedProvincia == null ? null : _searchMunicipios,
@@ -567,6 +814,8 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
             controller: _licenciaTaxiController,
             label: 'Licencia de Taxi',
             icon: Icons.card_travel_outlined,
+            fieldKey: 'licenciaTaxi',
+            focusNode: _licenciaTaxiFocusNode,
             validator: (v) =>
                 v?.isEmpty ?? true ? 'La licencia es obligatoria' : null,
           ),
@@ -575,6 +824,8 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
             controller: _matriculaController,
             label: 'Matrícula',
             icon: Icons.confirmation_number,
+            fieldKey: 'matricula',
+            focusNode: _matriculaFocusNode,
             validator: (v) =>
                 v?.isEmpty ?? true ? 'La matrícula es obligatoria' : null,
           ),
@@ -632,18 +883,30 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
     required TextEditingController controller,
     required String label,
     required IconData icon,
+    String? fieldKey,
+    FocusNode? focusNode,
     TextInputType keyboardType = TextInputType.text,
     String? Function(String?)? validator,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
+    final backendErrorText = fieldKey != null && _backendErrorField == fieldKey
+        ? _backendErrorMessage
+        : null;
 
     return TextFormField(
       controller: controller,
+      focusNode: focusNode,
       keyboardType: keyboardType,
       validator: validator,
+      onChanged: (_) {
+        if (fieldKey != null) {
+          _clearBackendErrorIfMatches(fieldKey);
+        }
+      },
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: Icon(icon),
+        errorText: backendErrorText,
         filled: true,
         fillColor: colorScheme.surface,
         border: OutlineInputBorder(
@@ -660,6 +923,14 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(color: colorScheme.primary, width: 2),
         ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: colorScheme.error),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: colorScheme.error, width: 2),
+        ),
       ),
     );
   }
@@ -669,6 +940,8 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
     required IconData icon,
     required TextEditingController controller,
     required String? selectedValue,
+    String? fieldKey,
+    FocusNode? focusNode,
     required bool showDropdown,
     required List<PlacePrediction> suggestions,
     required Function(String)? onChanged,
@@ -676,15 +949,27 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
     bool enabled = true,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
+    final backendErrorText = fieldKey != null && _backendErrorField == fieldKey
+        ? _backendErrorMessage
+        : null;
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         TextFormField(
           controller: controller,
+          focusNode: focusNode,
           enabled: enabled,
+          onChanged: (value) {
+            if (fieldKey != null) {
+              _clearBackendErrorIfMatches(fieldKey);
+            }
+            onChanged?.call(value);
+          },
           decoration: InputDecoration(
             labelText: label,
             prefixIcon: Icon(icon),
+            errorText: backendErrorText,
             filled: true,
             fillColor: colorScheme.surface,
             border: OutlineInputBorder(
@@ -701,6 +986,14 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(color: colorScheme.primary, width: 2),
             ),
+            errorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: colorScheme.error),
+            ),
+            focusedErrorBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: colorScheme.error, width: 2),
+            ),
             disabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(
@@ -708,7 +1001,6 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
               ),
             ),
           ),
-          onChanged: onChanged,
         ),
         if (showDropdown) ...[
           const SizedBox(height: 4),

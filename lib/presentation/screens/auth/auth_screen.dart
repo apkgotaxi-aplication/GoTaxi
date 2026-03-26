@@ -7,11 +7,7 @@ import 'package:gotaxi/domain/validators/dni_validator.dart';
 import 'package:gotaxi/presentation/screens/home/home_screen.dart';
 
 class AuthScreen extends StatefulWidget {
-  const AuthScreen({
-    super.key,
-    this.authService,
-    this.homeBuilder,
-  });
+  const AuthScreen({super.key, this.authService, this.homeBuilder});
 
   final AuthService? authService;
   final WidgetBuilder? homeBuilder;
@@ -34,6 +30,64 @@ class _AuthScreenState extends State<AuthScreen>
   late final AnimationController _beamsController;
   late final AuthService _authService;
   late final WidgetBuilder _homeBuilder;
+
+  Future<void> _showForgotPasswordDialog() async {
+    final resetEmailController = TextEditingController(
+      text: _emailController.text.trim(),
+    );
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Recuperar contraseña'),
+          content: TextField(
+            controller: resetEmailController,
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(
+              labelText: 'Email',
+              prefixIcon: Icon(Icons.email),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final email = resetEmailController.text.trim();
+                if (email.isEmpty) {
+                  _showError('Introduce tu correo para restablecer contraseña');
+                  return;
+                }
+
+                try {
+                  await _authService.resetPassword(email: email);
+                  if (!mounted) return;
+                  Navigator.of(context).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Te hemos enviado un correo para restablecer la contraseña.',
+                      ),
+                    ),
+                  );
+                } on AuthException catch (e) {
+                  _showError(e.message);
+                } catch (_) {
+                  _showError('No se pudo enviar el correo de recuperación.');
+                }
+              },
+              child: const Text('Enviar'),
+            ),
+          ],
+        );
+      },
+    );
+
+    resetEmailController.dispose();
+  }
 
   @override
   void initState() {
@@ -90,9 +144,9 @@ class _AuthScreenState extends State<AuthScreen>
 
       if (mounted) {
         if (_isLogin) {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute<void>(builder: _homeBuilder),
-          );
+          Navigator.of(
+            context,
+          ).pushReplacement(MaterialPageRoute<void>(builder: _homeBuilder));
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -235,6 +289,14 @@ class _AuthScreenState extends State<AuthScreen>
                       ),
 
                       const SizedBox(height: 12),
+
+                      if (_isLogin)
+                        TextButton(
+                          onPressed: _loading
+                              ? null
+                              : _showForgotPasswordDialog,
+                          child: const Text('¿Has olvidado tu contraseña?'),
+                        ),
 
                       TextButton(
                         onPressed: () => setState(() => _isLogin = !_isLogin),
