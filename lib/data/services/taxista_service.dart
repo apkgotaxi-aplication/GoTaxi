@@ -1,5 +1,4 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'dart:math';
 
 class TaxistaService {
   final SupabaseClient _supabase = Supabase.instance.client;
@@ -10,6 +9,7 @@ class TaxistaService {
     required String email,
     required String telefono,
     required String dni,
+    required String contrasena,
     required int municipioId,
     required int capacidad,
     required bool isAdmin,
@@ -36,7 +36,7 @@ class TaxistaService {
       // 1. Crear usuario en Auth
       final authResponse = await _supabase.auth.signUp(
         email: normalizedEmail,
-        password: _generateSecurePassword(),
+        password: contrasena,
         data: {
           'nombre': nombre.trim(),
           'apellidos': apellidos.trim(),
@@ -184,16 +184,6 @@ class TaxistaService {
         await _supabase.auth.admin.deleteUser(userId);
       } catch (_) {}
     }
-  }
-
-  String _generateSecurePassword() {
-    const chars =
-        'AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0123456789!@#\$%^&*';
-    final random = Random.secure();
-    final password = String.fromCharCodes(
-      List.generate(16, (_) => chars.codeUnitAt(random.nextInt(chars.length))),
-    );
-    return password;
   }
 
   Future<bool> isUserAdmin() async {

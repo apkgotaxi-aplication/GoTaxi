@@ -21,6 +21,7 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
   final _emailController = TextEditingController();
   final _telefonoController = TextEditingController();
   final _dniController = TextEditingController();
+  final _contrasenaController = TextEditingController();
 
   // Paso 2: Datos del vehículo
   final _licenciaTaxiController = TextEditingController();
@@ -33,6 +34,7 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
   final _emailFocusNode = FocusNode();
   final _telefonoFocusNode = FocusNode();
   final _dniFocusNode = FocusNode();
+  final _contrasenaFocusNode = FocusNode();
   final _licenciaTaxiFocusNode = FocusNode();
   final _matriculaFocusNode = FocusNode();
   final _provinciaFocusNode = FocusNode();
@@ -43,6 +45,7 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
   bool _loading = false;
   bool _isAdmin = false;
   bool _minusvalido = false;
+  bool _obscureContrasena = true;
 
   // Provincias y municipios
   List<PlacePrediction> _provinciasSugerencias = [];
@@ -239,6 +242,7 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
         email: _emailController.text.trim(),
         telefono: _telefonoController.text.trim(),
         dni: _dniController.text.trim(),
+        contrasena: _contrasenaController.text,
         municipioId: municipioId,
         capacidad: capacidad,
         isAdmin: _isAdmin,
@@ -336,6 +340,9 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
           break;
         case 'dni':
           _dniFocusNode.requestFocus();
+          break;
+        case 'contrasena':
+          _contrasenaFocusNode.requestFocus();
           break;
         case 'licenciaTaxi':
           _licenciaTaxiFocusNode.requestFocus();
@@ -498,6 +505,7 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
     _emailController.dispose();
     _telefonoController.dispose();
     _dniController.dispose();
+    _contrasenaController.dispose();
     _licenciaTaxiController.dispose();
     _matriculaController.dispose();
     _marcaController.dispose();
@@ -509,6 +517,7 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
     _emailFocusNode.dispose();
     _telefonoFocusNode.dispose();
     _dniFocusNode.dispose();
+    _contrasenaFocusNode.dispose();
     _licenciaTaxiFocusNode.dispose();
     _matriculaFocusNode.dispose();
     _provinciaFocusNode.dispose();
@@ -743,6 +752,8 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
               return null;
             },
           ),
+          const SizedBox(height: 16),
+          _buildPasswordField(),
           const SizedBox(height: 24),
           const Text(
             'Ubicación de Trabajo',
@@ -906,6 +917,61 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: Icon(icon),
+        errorText: backendErrorText,
+        filled: true,
+        fillColor: colorScheme.surface,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: colorScheme.outline),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(
+            color: colorScheme.outline.withValues(alpha: 0.5),
+          ),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: colorScheme.primary, width: 2),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: colorScheme.error),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: colorScheme.error, width: 2),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPasswordField() {
+    final colorScheme = Theme.of(context).colorScheme;
+    final backendErrorText = _backendErrorField == 'contrasena'
+        ? _backendErrorMessage
+        : null;
+
+    return TextFormField(
+      controller: _contrasenaController,
+      focusNode: _contrasenaFocusNode,
+      obscureText: _obscureContrasena,
+      onChanged: (_) => _clearBackendErrorIfMatches('contrasena'),
+      validator: (v) {
+        if (v?.isEmpty ?? true) return 'La contraseña es obligatoria';
+        if (v!.length < 6) return 'Mínimo 6 caracteres';
+        return null;
+      },
+      decoration: InputDecoration(
+        labelText: 'Contraseña',
+        prefixIcon: const Icon(Icons.lock_outline),
+        suffixIcon: IconButton(
+          icon: Icon(
+            _obscureContrasena ? Icons.visibility_off : Icons.visibility,
+          ),
+          onPressed: () =>
+              setState(() => _obscureContrasena = !_obscureContrasena),
+        ),
         errorText: backendErrorText,
         filled: true,
         fillColor: colorScheme.surface,
