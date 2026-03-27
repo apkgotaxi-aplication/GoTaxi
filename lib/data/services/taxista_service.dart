@@ -192,7 +192,7 @@ class TaxistaService {
       if (user == null) return false;
 
       final response = await _supabase
-          .from('taxistas')
+          .from('clientes')
           .select('is_admin')
           .eq('id', user.id)
           .maybeSingle();
@@ -201,5 +201,46 @@ class TaxistaService {
     } catch (e) {
       return false;
     }
+  }
+
+  Future<List<Map<String, dynamic>>> listTaxistas() async {
+    final response = await _supabase
+        .from('taxistas')
+        .select(
+          'id, estado, is_admin, vehiculo_id, municipio_id, '
+          'usuarios!inner(nombre, apellidos, email, telefono, dni), '
+          'vehiculos!inner(licencia_taxi, matricula, marca, modelo, color, capacidad, minusvalido)',
+        )
+        .order('created_at', ascending: false);
+
+    return List<Map<String, dynamic>>.from(response);
+  }
+
+  Future<void> deleteTaxista({required String taxistaId}) async {
+    final isAdmin = await isUserAdmin();
+    if (!isAdmin) {
+      throw Exception('No tienes permisos de administrador');
+    }
+
+    final taxista = await _supabase
+        .from('taxistas')
+        .select('vehiculo_id')
+        .eq('id', taxistaId)
+        .maybeSingle();
+
+    if (taxista == null) {
+      throw Exception('Taxista no encontrado');
+    }
+
+    final vehiculoId = taxista['vehiculo_id'] as int;
+
+    // Eliminar registro de taxistas
+    await _supabase.from('taxistas').delete().eq('id', taxistaId);
+
+    // Eliminar vehículo
+    await _supabase.from('vehiculos').delete().eq('id', vehiculoId);
+
+    // Eliminar usuario
+    await _supabase.from('usuarios').delete().eq('id', taxistaId);
   }
 }
