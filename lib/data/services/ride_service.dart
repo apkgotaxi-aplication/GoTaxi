@@ -26,11 +26,59 @@ class RideAssignmentResult {
   }
 }
 
+class RideCancellationResult {
+  const RideCancellationResult({
+    required this.success,
+    required this.message,
+    this.estado,
+  });
+
+  final bool success;
+  final String message;
+  final String? estado;
+
+  factory RideCancellationResult.fromMap(Map<String, dynamic> map) {
+    return RideCancellationResult(
+      success: map['success'] as bool? ?? false,
+      message: (map['message'] as String?) ?? 'No se pudo cancelar el viaje.',
+      estado: map['estado']?.toString(),
+    );
+  }
+}
+
 class RideService {
   RideService({SupabaseClient? supabase})
     : _supabase = supabase ?? Supabase.instance.client;
 
   final SupabaseClient _supabase;
+
+  Future<RideCancellationResult> cancelRide({required String viajeId}) async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      throw StateError('Debes iniciar sesion para cancelar un viaje.');
+    }
+
+    final raw = await _supabase.rpc(
+      'cancel_ride',
+      params: {'p_viaje_id': viajeId, 'p_cliente_id': user.id},
+    );
+
+    if (raw is List && raw.isNotEmpty) {
+      return RideCancellationResult.fromMap(
+        Map<String, dynamic>.from(raw.first as Map),
+      );
+    }
+
+    if (raw is Map) {
+      return RideCancellationResult.fromMap(Map<String, dynamic>.from(raw));
+    }
+
+    return const RideCancellationResult(
+      success: false,
+      message:
+          'No se pudo interpretar la respuesta del servidor. Inténtelo de nuevo más tarde.',
+    );
+  }
 
   Future<RideAssignmentResult> createRideAssignment({
     required String origen,

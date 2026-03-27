@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gotaxi/presentation/screens/home/ride_detail_screen.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 
 class RideHistoryScreen extends StatefulWidget {
@@ -47,6 +48,43 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
       _ridesFuture = index == 0
           ? fetchCurrentUserRideHistory()
           : fetchCurrentUserDriverRideHistory();
+    });
+  }
+
+  Future<void> _openRideDetail({
+    required int index,
+    required Map<String, dynamic> ride,
+  }) async {
+    if (_selectedTab != 0) return;
+
+    final rideId = ride['id']?.toString();
+    if (rideId == null || rideId.isEmpty) return;
+
+    final updatedRide = await Navigator.of(context).push<Map<String, dynamic>>(
+      MaterialPageRoute(
+        builder: (_) => RideDetailScreen(rideId: rideId, initialRide: ride),
+      ),
+    );
+
+    if (updatedRide == null) return;
+
+    final currentRides = List<Map<String, dynamic>>.from(await _ridesFuture);
+    if (index < 0 || index >= currentRides.length) return;
+
+    final oldRideId = currentRides[index]['id']?.toString();
+    if (oldRideId != rideId) {
+      final fixedIndex = currentRides.indexWhere(
+        (item) => item['id']?.toString() == rideId,
+      );
+      if (fixedIndex == -1) return;
+      currentRides[fixedIndex] = {...currentRides[fixedIndex], ...updatedRide};
+    } else {
+      currentRides[index] = {...currentRides[index], ...updatedRide};
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _ridesFuture = Future.value(currentRides);
     });
   }
 
@@ -233,42 +271,134 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
                   ride['driver_nombre']?.toString() ?? 'Sin nombre';
               final driverApellidos =
                   ride['driver_apellidos']?.toString() ?? 'Sin apellidos';
+              final state = normalizeRideState(ride['estado']);
+              final isActiveRide = _selectedTab == 0 && isRideCancelable(state);
               final createdAt = _formatDate(ride['created_at']);
+              final statusColor = switch (state) {
+                'pendiente' => Colors.orange,
+                'confirmada' => Theme.of(context).colorScheme.primary,
+                'cancelada' => Theme.of(context).colorScheme.error,
+                'finalizada' => Colors.green,
+                _ => Theme.of(context).colorScheme.outline,
+              };
 
-              return Card(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.receipt_long, size: 18),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Viaje ${index + 1}',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
+              return InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: _selectedTab == 0
+                    ? () => _openRideDetail(index: index, ride: ride)
+                    : null,
+                child: Card(
+                  color: isActiveRide
+                      ? Theme.of(
+                          context,
+                        ).colorScheme.primary.withValues(alpha: 0.08)
+                      : null,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    side: isActiveRide
+                        ? BorderSide(
+                            color: Theme.of(context).colorScheme.primary,
+                            width: 1.4,
+                          )
+                        : BorderSide.none,
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              isActiveRide
+                                  ? Icons.local_taxi
+                                  : Icons.receipt_long,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Viaje ${index + 1}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
                               ),
                             ),
+                            Text(
+                              createdAt,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: statusColor.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: statusColor.withValues(alpha: 0.45),
+                                ),
+                              ),
+                              child: Text(
+                                state.isEmpty ? 'sin estado' : state,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: statusColor,
+                                ),
+                              ),
+                            ),
+                            if (isActiveRide)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primary.withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Text(
+                                  'Activo',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text('Taxista: $driverName $driverApellidos'),
+                        if (_selectedTab == 0)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.info_outline, size: 16),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Pulsa para ver detalle',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
                           ),
-                          Text(
-                            createdAt,
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-                      // const SizedBox(height: 10),
-                      // Text('ID viaje: $rideId'),
-                      // const SizedBox(height: 4),
-                      // Text('Usuario: $userName $userApellidos'),
-                      const SizedBox(height: 4),
-                      Text('Taxista: $driverName $driverApellidos'),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               );
