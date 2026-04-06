@@ -1,5 +1,64 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+class TaxistaActionResult {
+  const TaxistaActionResult({
+    required this.success,
+    required this.message,
+    this.estado,
+  });
+
+  final bool success;
+  final String message;
+  final String? estado;
+
+  factory TaxistaActionResult.fromMap(Map<String, dynamic> map) {
+    return TaxistaActionResult(
+      success: map['success'] == true,
+      message: (map['message']?.toString() ?? 'Operacion completada').trim(),
+      estado: map['estado']?.toString(),
+    );
+  }
+}
+
+class DriverDashboardData {
+  const DriverDashboardData({
+    required this.success,
+    required this.message,
+    required this.estadoTaxista,
+    required this.ultimosViajes,
+    this.viajeActivo,
+  });
+
+  final bool success;
+  final String message;
+  final String estadoTaxista;
+  final Map<String, dynamic>? viajeActivo;
+  final List<Map<String, dynamic>> ultimosViajes;
+
+  factory DriverDashboardData.fromMap(Map<String, dynamic> map) {
+    final viajeActivoRaw = map['viaje_activo'];
+    final ultimosViajesRaw = map['ultimos_viajes'];
+
+    return DriverDashboardData(
+      success: map['success'] == true,
+      message: (map['message']?.toString() ?? 'Dashboard cargado').trim(),
+      estadoTaxista: (map['estado_taxista']?.toString() ?? 'no disponible')
+          .trim(),
+      viajeActivo: viajeActivoRaw is Map<String, dynamic>
+          ? viajeActivoRaw
+          : (viajeActivoRaw is Map
+                ? Map<String, dynamic>.from(viajeActivoRaw)
+                : null),
+      ultimosViajes: ultimosViajesRaw is List
+          ? ultimosViajesRaw
+                .whereType<Map>()
+                .map((row) => Map<String, dynamic>.from(row))
+                .toList()
+          : const [],
+    );
+  }
+}
+
 class TaxistaService {
   final SupabaseClient _supabase = Supabase.instance.client;
 
@@ -191,13 +250,23 @@ class TaxistaService {
       final user = _supabase.auth.currentUser;
       if (user == null) return false;
 
-      final response = await _supabase
+      final clienteResponse = await _supabase
           .from('clientes')
           .select('is_admin')
           .eq('id', user.id)
           .maybeSingle();
 
-      return response != null && response['is_admin'] == true;
+      if (clienteResponse != null && clienteResponse['is_admin'] == true) {
+        return true;
+      }
+
+      final taxistaResponse = await _supabase
+          .from('taxistas')
+          .select('is_admin')
+          .eq('id', user.id)
+          .maybeSingle();
+
+      return taxistaResponse != null && taxistaResponse['is_admin'] == true;
     } catch (e) {
       return false;
     }
@@ -242,5 +311,81 @@ class TaxistaService {
 
     // Eliminar usuario
     await _supabase.from('usuarios').delete().eq('id', taxistaId);
+  }
+
+  Future<DriverDashboardData> getDriverDashboardData({int limit = 3}) async {
+    final raw = await _supabase.rpc(
+      'get_driver_dashboard_data',
+      params: {'p_limit': limit},
+    );
+
+    if (raw is Map<String, dynamic>) {
+      return DriverDashboardData.fromMap(raw);
+    }
+
+    if (raw is Map) {
+      return DriverDashboardData.fromMap(Map<String, dynamic>.from(raw));
+    }
+
+    return const DriverDashboardData(
+      success: false,
+      message: 'No se pudo obtener el dashboard del taxista.',
+      estadoTaxista: 'no disponible',
+      ultimosViajes: [],
+    );
+  }
+
+  Future<TaxistaActionResult> setDriverDisponibilidad({
+    required String estado,
+  }) async {
+    final raw = await _supabase.rpc(
+      'set_driver_disponibilidad',
+      params: {'p_estado': estado},
+    );
+
+    if (raw is List && raw.isNotEmpty) {
+      return TaxistaActionResult.fromMap(Map<String, dynamic>.from(raw.first));
+    }
+
+    if (raw is Map) {
+      return TaxistaActionResult.fromMap(Map<String, dynamic>.from(raw));
+    }
+
+    return const TaxistaActionResult(
+      success: false,
+      message: 'No se pudo cambiar la disponibilidad.',
+    );
+  }
+
+  Future<TaxistaActionResult> confirmRideByDriver({required String viajeId}) {
+    return _runDriverRideAction('confirm_ride_by_driver', viajeId);
+  }
+
+  Future<TaxistaActionResult> cancelRideByDriver({required String viajeId}) {
+    return _runDriverRideAction('cancel_ride_by_driver', viajeId);
+  }
+
+  Future<TaxistaActionResult> finishRideByDriver({required String viajeId}) {
+    return _runDriverRideAction('finish_ride_by_driver', viajeId);
+  }
+
+  Future<TaxistaActionResult> _runDriverRideAction(
+    String rpcName,
+    String viajeId,
+  ) async {
+    final raw = await _supabase.rpc(rpcName, params: {'p_viaje_id': viajeId});
+
+    if (raw is List && raw.isNotEmpty) {
+      return TaxistaActionResult.fromMap(Map<String, dynamic>.from(raw.first));
+    }
+
+    if (raw is Map) {
+      return TaxistaActionResult.fromMap(Map<String, dynamic>.from(raw));
+    }
+
+    return const TaxistaActionResult(
+      success: false,
+      message: 'No se pudo completar la accion solicitada.',
+    );
   }
 }

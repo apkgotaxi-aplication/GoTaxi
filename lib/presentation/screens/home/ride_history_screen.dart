@@ -3,7 +3,9 @@ import 'package:gotaxi/presentation/screens/home/ride_detail_screen.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 
 class RideHistoryScreen extends StatefulWidget {
-  const RideHistoryScreen({super.key});
+  const RideHistoryScreen({super.key, this.initialTab = 0});
+
+  final int initialTab;
 
   @override
   State<RideHistoryScreen> createState() => _RideHistoryScreenState();
@@ -19,8 +21,11 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
   @override
   void initState() {
     super.initState();
+    _selectedTab = widget.initialTab;
     _loadRole();
-    _ridesFuture = fetchCurrentUserRideHistory();
+    _ridesFuture = _selectedTab == 1
+        ? fetchCurrentUserDriverRideHistory()
+        : fetchCurrentUserRideHistory();
   }
 
   Future<void> _loadRole() async {
@@ -110,7 +115,7 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
-                if (_isTaxista)
+                if (_isTaxista && _selectedTab == 0)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                     child: Container(

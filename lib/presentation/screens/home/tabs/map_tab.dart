@@ -7,8 +7,8 @@ import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
+import 'package:gotaxi/data/services/tarifa_service.dart';
 import 'package:http/http.dart' as http;
-import 'package:gotaxi/utils/pricing_constants.dart';
 import 'package:gotaxi/utils/places_autocomplete_service.dart';
 
 class MapTab extends StatefulWidget {
@@ -25,6 +25,7 @@ class _MapTabState extends State<MapTab> {
 
   late PlacesAutocompleteService _placesService;
   final RideService _rideService = RideService();
+  final TarifaService _tarifaService = TarifaService();
 
   GoogleMapController? _mapController;
   LatLng? _currentPosition;
@@ -325,7 +326,9 @@ class _MapTabState extends State<MapTab> {
       final durationSeconds = (duration?['value'] as num?)?.toDouble() ?? 0.0;
       final kilometers = distanceMeters / 1000;
       final minutes = durationSeconds / 60;
-      final estimatedFare = PricingConstants.calculateEstimatedFare(
+      final ciudadOrigen = await _resolveOriginCity(origin);
+      final estimatedFare = await _tarifaService.calculateEstimatedFareForCity(
+        ciudadOrigen: ciudadOrigen,
         kilometers: kilometers,
         minutes: minutes,
       );
@@ -845,7 +848,7 @@ class _MapTabState extends State<MapTab> {
                         ),
                         const SizedBox(width: 6),
                         Text(
-                          'Precio aprox.: ${_estimatedFareEur!.toStringAsFixed(2)} ${PricingConstants.currencySymbol}',
+                          'Precio aprox.: ${_estimatedFareEur!.toStringAsFixed(2)} €',
                           style: theme.textTheme.bodyMedium?.copyWith(
                             fontWeight: FontWeight.w500,
                             color: theme.colorScheme.primary,
