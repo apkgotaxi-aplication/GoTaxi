@@ -331,7 +331,7 @@ class _GestionarTarifasScreenState extends State<GestionarTarifasScreen> {
               TextField(
                 controller: _municipioController,
                 decoration: const InputDecoration(
-                  labelText: 'Agregar municipio con Google Places',
+                  labelText: 'Agregar municipio',
                   prefixIcon: Icon(Icons.location_city),
                 ),
               ),
