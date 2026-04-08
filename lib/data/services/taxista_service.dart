@@ -365,6 +365,10 @@ class TaxistaService {
     return _runDriverRideAction('cancel_ride_by_driver', viajeId);
   }
 
+  Future<TaxistaActionResult> startRideByDriver({required String viajeId}) {
+    return _runDriverRideAction('start_ride_by_driver', viajeId);
+  }
+
   Future<TaxistaActionResult> finishRideByDriver({required String viajeId}) {
     return _runDriverRideAction('finish_ride_by_driver', viajeId);
   }

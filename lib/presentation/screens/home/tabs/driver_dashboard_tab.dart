@@ -103,6 +103,8 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
         result = await _taxistaService.confirmRideByDriver(viajeId: rideId);
       } else if (action == 'cancelar') {
         result = await _taxistaService.cancelRideByDriver(viajeId: rideId);
+      } else if (action == 'comenzar') {
+        result = await _taxistaService.startRideByDriver(viajeId: rideId);
       } else {
         result = await _taxistaService.finishRideByDriver(viajeId: rideId);
       }
@@ -143,6 +145,33 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
 
     if (confirmed == true) {
       await _handleRideAction(action: 'finalizar', rideId: rideId);
+    }
+  }
+
+  Future<void> _confirmCancelRide(String rideId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancelar viaje'),
+        content: const Text(
+          '¿Seguro que quieres cancelar este viaje? Esta accion no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Volver'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Cancelar viaje'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _handleRideAction(action: 'cancelar', rideId: rideId);
     }
   }
 
@@ -358,6 +387,13 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
             Text('Origen: ${ride['origen'] ?? '-'}'),
             const SizedBox(height: 4),
             Text('Destino: ${ride['destino'] ?? '-'}'),
+            if (estado == 'confirmada') ...[
+              const SizedBox(height: 4),
+              Text(
+                'ETA del taxista al origen: disponible en una proxima version.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
             const SizedBox(height: 12),
             Row(
               children: [
@@ -374,19 +410,30 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                     ),
                   ),
                 if (estado == 'pendiente') const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: (rideId.isEmpty || _processingRideAction)
-                        ? null
-                        : () => _handleRideAction(
-                            action: 'cancelar',
-                            rideId: rideId,
-                          ),
-                    child: const Text('Cancelar'),
+                if (estado == 'confirmada')
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: (rideId.isEmpty || _processingRideAction)
+                          ? null
+                          : () => _handleRideAction(
+                              action: 'comenzar',
+                              rideId: rideId,
+                            ),
+                      child: const Text('Comenzar viaje'),
+                    ),
                   ),
-                ),
-                if (estado == 'en_curso') ...[
-                  const SizedBox(width: 8),
+                if (estado == 'confirmada') const SizedBox(width: 8),
+                if (estado == 'pendiente' || estado == 'confirmada')
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: (rideId.isEmpty || _processingRideAction)
+                          ? null
+                          : () => _confirmCancelRide(rideId),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                if (estado == 'en_curso') const SizedBox(width: 8),
+                if (estado == 'en_curso')
                   Expanded(
                     child: FilledButton(
                       onPressed: (rideId.isEmpty || _processingRideAction)
@@ -395,7 +442,6 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                       child: const Text('Finalizar viaje'),
                     ),
                   ),
-                ],
               ],
             ),
           ],

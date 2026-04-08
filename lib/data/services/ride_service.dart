@@ -139,7 +139,20 @@ class RideService {
     RideAssignmentResult result,
     int numPasajeros,
   ) {
-    if (result.success) return result;
+    if (result.success) {
+      final normalizedState = result.estado?.toLowerCase().trim();
+      if (normalizedState == 'pendiente') {
+        return RideAssignmentResult(
+          success: true,
+          viajeId: result.viajeId,
+          taxistaId: result.taxistaId,
+          estado: result.estado,
+          message:
+              'Solicitud enviada. El taxista debe confirmar tu viaje para empezarlo.',
+        );
+      }
+      return result;
+    }
 
     final message = result.message.toLowerCase();
 
