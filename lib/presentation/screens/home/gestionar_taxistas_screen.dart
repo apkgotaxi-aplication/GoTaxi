@@ -11,15 +11,23 @@ class GestionarTaxistasScreen extends StatefulWidget {
 
 class _GestionarTaxistasScreenState extends State<GestionarTaxistasScreen> {
   final _taxistaService = TaxistaService();
+  final _searchController = TextEditingController();
   List<Map<String, dynamic>> _taxistas = [];
   bool _loading = true;
   String? _error;
   String? _deletingId;
+  String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
     _loadTaxistas();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadTaxistas() async {
@@ -126,6 +134,7 @@ class _GestionarTaxistasScreenState extends State<GestionarTaxistasScreen> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final filteredTaxistas = _filteredTaxistas;
 
     return Scaffold(
       appBar: AppBar(
@@ -140,15 +149,70 @@ class _GestionarTaxistasScreenState extends State<GestionarTaxistasScreen> {
           ? _buildEmptyState(colorScheme)
           : RefreshIndicator(
               onRefresh: _loadTaxistas,
-              child: ListView.builder(
+              child: ListView(
                 padding: const EdgeInsets.all(16),
-                itemCount: _taxistas.length,
-                itemBuilder: (context, index) {
-                  return _buildTaxistaCard(_taxistas[index], colorScheme);
-                },
+                children: [
+                  TextField(
+                    controller: _searchController,
+                    onChanged: (value) {
+                      setState(() => _searchQuery = value.trim().toLowerCase());
+                    },
+                    decoration: InputDecoration(
+                      hintText:
+                          'Buscar por nombre, coche, matricula, licencia, email o telefono',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: _searchQuery.isEmpty
+                          ? null
+                          : IconButton(
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                              icon: const Icon(Icons.clear),
+                            ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  if (filteredTaxistas.isEmpty)
+                    _buildNoSearchResultsState(colorScheme)
+                  else
+                    ...filteredTaxistas.map(
+                      (taxista) => _buildTaxistaCard(taxista, colorScheme),
+                    ),
+                ],
               ),
             ),
     );
+  }
+
+  List<Map<String, dynamic>> get _filteredTaxistas {
+    if (_searchQuery.isEmpty) return _taxistas;
+
+    return _taxistas.where((taxista) {
+      final usuario = taxista['usuarios'] as Map<String, dynamic>;
+      final vehiculo = taxista['vehiculos'] as Map<String, dynamic>;
+
+      final searchableFields = [
+        usuario['nombre'],
+        usuario['apellidos'],
+        '${usuario['nombre'] ?? ''} ${usuario['apellidos'] ?? ''}',
+        usuario['email'],
+        usuario['telefono'],
+        vehiculo['matricula'],
+        vehiculo['licencia_taxi'],
+        vehiculo['marca'],
+        vehiculo['modelo'],
+        '${vehiculo['marca'] ?? ''} ${vehiculo['modelo'] ?? ''}',
+      ];
+
+      return searchableFields.any(
+        (field) =>
+            (field?.toString().toLowerCase() ?? '').contains(_searchQuery),
+      );
+    }).toList();
   }
 
   Widget _buildErrorState(ColorScheme colorScheme) {
@@ -206,6 +270,33 @@ class _GestionarTaxistasScreenState extends State<GestionarTaxistasScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildNoSearchResultsState(ColorScheme colorScheme) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 48),
+      child: Column(
+        children: [
+          Icon(Icons.search_off, size: 56, color: colorScheme.outline),
+          const SizedBox(height: 12),
+          Text(
+            'No hay resultados para tu busqueda',
+            style: TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w600,
+              color: colorScheme.onSurface,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Prueba con otro nombre, coche, matricula, licencia, email o telefono.',
+            style: TextStyle(color: colorScheme.outline),
+            textAlign: TextAlign.center,
+          ),
+        ],
       ),
     );
   }
