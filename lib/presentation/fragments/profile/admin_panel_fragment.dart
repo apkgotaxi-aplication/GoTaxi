@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../screens/home/crear_taxista_screen.dart';
+import '../../screens/home/gestionar_tarifas_screen.dart';
+import '../../screens/home/gestionar_taxistas_screen.dart';
 
 class AdminPanelFragment extends StatelessWidget {
   const AdminPanelFragment({super.key});
@@ -93,6 +95,91 @@ class AdminPanelFragment extends StatelessWidget {
                         Icon(Icons.add),
                         SizedBox(width: 8),
                         Text('Crear Taxista'),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: colorScheme.errorContainer.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.list_alt, color: colorScheme.error, size: 28),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Gestionar Taxistas',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Visualiza todos los taxistas registrados y elimina los que ya no sean necesarios.',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey.shade400,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const GestionarTaxistasScreen(),
+                        ),
+                      );
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.people_outline),
+                        SizedBox(width: 8),
+                        Text('Gestionar Taxistas'),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const GestionarTarifasScreen(),
+                        ),
+                      );
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.price_change_outlined),
+                        SizedBox(width: 8),
+                        Text('Gestionar Tarifas'),
                       ],
                     ),
                   ),

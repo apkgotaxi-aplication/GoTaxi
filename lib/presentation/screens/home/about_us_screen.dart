@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 class AboutUsScreen extends StatelessWidget {
   const AboutUsScreen({super.key});
 
-  static const _companyName = 'GoTaxi Mobility'; // REEMPLAZAR
+  static const _companyName = 'GoTaxi'; // REEMPLAZAR
   static const _version = '1.0.0'; // REEMPLAZAR
   static const _supportEmail = 'soporte@gotaxi.example.com'; // REEMPLAZAR
   static const _supportPhone = '+34 900 000 000'; // REEMPLAZAR
@@ -13,11 +13,12 @@ class AboutUsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('About Us')),
+      appBar: AppBar(title: const Text('Sobre Nosotros')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        padding: EdgeInsets.fromLTRB(16, 16, 16, 40 + bottomInset),
         children: [
           Container(
             padding: const EdgeInsets.all(20),
@@ -65,22 +66,22 @@ class AboutUsScreen extends StatelessWidget {
                     color: colorScheme.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.shade100,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Text(
-                    'Contenido de ejemplo: REEMPLAZAR con datos reales',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-                  ),
-                ),
+                // const SizedBox(height: 10),
+                // Container(
+                //   padding: const EdgeInsets.symmetric(
+                //     horizontal: 12,
+                //     vertical: 6,
+                //   ),
+                //   decoration: BoxDecoration(
+                //     color: Colors.amber.shade100,
+                //     borderRadius: BorderRadius.circular(20),
+                //   ),
+                //   child: const Text(
+                //     'Contenido de ejemplo: REEMPLAZAR con datos reales',
+                //     textAlign: TextAlign.center,
+                //     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                //   ),
+                // ),
               ],
             ),
           ),
