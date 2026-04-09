@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../screens/home/crear_taxista_screen.dart';
+import '../../screens/home/gestionar_tarifas_screen.dart';
 import '../../screens/home/gestionar_taxistas_screen.dart';
 
 class AdminPanelFragment extends StatelessWidget {
@@ -152,6 +153,33 @@ class AdminPanelFragment extends StatelessWidget {
                         Icon(Icons.people_outline),
                         SizedBox(width: 8),
                         Text('Gestionar Taxistas'),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const GestionarTarifasScreen(),
+                        ),
+                      );
+                    },
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.price_change_outlined),
+                        SizedBox(width: 8),
+                        Text('Gestionar Tarifas'),
                       ],
                     ),
                   ),
