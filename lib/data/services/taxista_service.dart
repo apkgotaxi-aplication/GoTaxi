@@ -285,6 +285,23 @@ class TaxistaService {
     return List<Map<String, dynamic>>.from(response);
   }
 
+  Future<List<Map<String, dynamic>>> getTaxistaRideHistory({
+    required String taxistaId,
+    int limit = 100,
+  }) async {
+    final response = await _supabase
+        .from('viajes')
+        .select(
+          'id, created_at, estado, origen, destino, precio, distancia, '
+          'duracion, fecha_recogida, fecha_entrega, ciudad_origen',
+        )
+        .eq('driver_id', taxistaId)
+        .order('created_at', ascending: false)
+        .limit(limit);
+
+    return List<Map<String, dynamic>>.from(response);
+  }
+
   Future<void> deleteTaxista({required String taxistaId}) async {
     final isAdmin = await isUserAdmin();
     if (!isAdmin) {
