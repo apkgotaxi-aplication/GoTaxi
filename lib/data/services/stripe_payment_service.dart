@@ -109,7 +109,10 @@ class StripePaymentService {
       throw StateError('Debes iniciar sesion para continuar.');
     }
 
-    final response = await _invokeStripeFunction(body);
+    final response = await _invokeStripeFunction(
+      body,
+      accessToken: session.accessToken,
+    );
     return _decodeCheckoutResponse(response);
   }
 
@@ -128,12 +131,14 @@ class StripePaymentService {
   }
 
   Future<Map<String, dynamic>> _invokeStripeFunction(
-    Map<String, dynamic> body,
-  ) async {
+    Map<String, dynamic> body, {
+    required String accessToken,
+  }) async {
     try {
       final response = await _supabase.functions.invoke(
         'stripe-payments',
         body: body,
+        headers: {'Authorization': 'Bearer $accessToken'},
       );
 
       final data = response.data;
@@ -162,12 +167,16 @@ class StripePaymentService {
     } on FunctionException catch (error) {
       final bodyText = error.details?.toString();
       if (bodyText != null && bodyText.isNotEmpty) {
-        final decoded = jsonDecode(bodyText);
-        if (decoded is Map<String, dynamic>) {
-          return decoded;
-        }
-        if (decoded is Map) {
-          return Map<String, dynamic>.from(decoded);
+        try {
+          final decoded = jsonDecode(bodyText);
+          if (decoded is Map<String, dynamic>) {
+            return decoded;
+          }
+          if (decoded is Map) {
+            return Map<String, dynamic>.from(decoded);
+          }
+        } catch (_) {
+          return <String, dynamic>{'success': false, 'message': bodyText};
         }
       }
 
