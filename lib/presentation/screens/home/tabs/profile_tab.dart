@@ -129,6 +129,12 @@ class _ProfileTabState extends State<ProfileTab> {
     }
   }
 
+  bool _isRideActive(Map<String, dynamic>? ride) {
+    if (ride == null) return false;
+    final state = normalizeRideState(ride['estado']);
+    return state != 'cancelada' && state != 'finalizada';
+  }
+
   Future<void> _showActiveRideDetail() async {
     final activeRide = _activeRide;
     final rideId = activeRide?['id']?.toString();
@@ -141,10 +147,17 @@ class _ProfileTabState extends State<ProfileTab> {
       ),
     );
 
-    if (!mounted || updatedRide == null) return;
+    if (!mounted) return;
+
+    final refreshedActiveRide = await _fetchActiveRideForCliente();
+    if (!mounted) return;
 
     setState(() {
-      _activeRide = {...activeRide, ...updatedRide};
+      if (updatedRide != null && _isRideActive(updatedRide)) {
+        _activeRide = {...(refreshedActiveRide ?? activeRide), ...updatedRide};
+      } else {
+        _activeRide = refreshedActiveRide;
+      }
     });
   }
 
@@ -759,7 +772,7 @@ class _ProfileTabState extends State<ProfileTab> {
     }
 
     final viajesItems = [
-      if (_isCliente && _activeRide != null)
+      if (_isCliente && _isRideActive(_activeRide))
         _MenuItem(
           icon: Icons.local_taxi,
           title: 'Viaje en curso',
