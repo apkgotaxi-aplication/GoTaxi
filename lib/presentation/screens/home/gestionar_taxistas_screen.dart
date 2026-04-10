@@ -680,6 +680,7 @@ class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
                 ),
               ),
             ),
+            SizedBox(height: MediaQuery.of(context).padding.bottom + 16),
           ],
         ),
       ),

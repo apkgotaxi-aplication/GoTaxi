@@ -60,14 +60,16 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
     required int index,
     required Map<String, dynamic> ride,
   }) async {
-    if (_selectedTab != 0) return;
-
     final rideId = ride['id']?.toString();
     if (rideId == null || rideId.isEmpty) return;
 
     final updatedRide = await Navigator.of(context).push<Map<String, dynamic>>(
       MaterialPageRoute(
-        builder: (_) => RideDetailScreen(rideId: rideId, initialRide: ride),
+        builder: (_) => RideDetailScreen(
+          rideId: rideId,
+          initialRide: ride,
+          isDriverView: _selectedTab == 1,
+        ),
       ),
     );
 
@@ -263,22 +265,34 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
         return RefreshIndicator(
           onRefresh: _reload,
           child: ListView.separated(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.fromLTRB(
+              16,
+              16,
+              16,
+              MediaQuery.of(context).padding.bottom + 32,
+            ),
             itemCount: rides.length,
             separatorBuilder: (_, __) => const SizedBox(height: 10),
             itemBuilder: (context, index) {
               final ride = rides[index];
-              // final rideId = ride['id']?.toString() ?? 'Sin ID';
-              // final userName = ride['user_nombre']?.toString() ?? 'Sin nombre';
-              // final userApellidos =
-              //     ride['user_apellidos']?.toString() ?? 'Sin apellidos';
               final driverName =
                   ride['driver_nombre']?.toString() ?? 'Sin nombre';
               final driverApellidos =
                   ride['driver_apellidos']?.toString() ?? 'Sin apellidos';
+              final clientName =
+                  ride['cliente_nombre']?.toString() ??
+                  ride['user_nombre']?.toString() ??
+                  'Sin nombre';
+              final clientApellidos =
+                  ride['cliente_apellidos']?.toString() ??
+                  ride['user_apellidos']?.toString() ??
+                  'Sin apellidos';
               final state = normalizeRideState(ride['estado']);
               final isActiveRide = _selectedTab == 0 && isRideCancelable(state);
               final createdAt = _formatDate(ride['created_at']);
+              final origin = ride['origen']?.toString() ?? 'No disponible';
+              final destination =
+                  ride['destino']?.toString() ?? 'No disponible';
               final statusColor = switch (state) {
                 'pendiente' => Colors.orange,
                 'confirmada' => Theme.of(context).colorScheme.primary,
@@ -287,11 +301,64 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
                 _ => Theme.of(context).colorScheme.outline,
               };
 
+              if (_selectedTab == 0) {
+                return InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () => _openRideDetail(index: index, ride: ride),
+                  child: Card(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.receipt_long, size: 18),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Viaje ${index + 1}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                              Text(
+                                createdAt,
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text('Origen: $origin'),
+                          const SizedBox(height: 2),
+                          Text('Destino: $destination'),
+                          const SizedBox(height: 2),
+                          Text('Taxista: $driverName $driverApellidos'),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              const Icon(Icons.info_outline, size: 16),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Pulsa para ver más información',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }
+
               return InkWell(
                 borderRadius: BorderRadius.circular(14),
-                onTap: _selectedTab == 0
-                    ? () => _openRideDetail(index: index, ride: ride)
-                    : null,
+                onTap: () => _openRideDetail(index: index, ride: ride),
                 child: Card(
                   color: isActiveRide
                       ? Theme.of(
@@ -336,6 +403,15 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
                           ],
                         ),
                         const SizedBox(height: 8),
+                        Text('Origen: $origin'),
+                        const SizedBox(height: 2),
+                        Text('Destino: $destination'),
+                        const SizedBox(height: 2),
+                        Text(
+                          _selectedTab == 0
+                              ? 'Taxista: $driverName $driverApellidos'
+                              : 'Cliente: $clientName $clientApellidos',
+                        ),
                         Wrap(
                           spacing: 8,
                           runSpacing: 8,
@@ -387,21 +463,16 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
                           ],
                         ),
                         const SizedBox(height: 6),
-                        Text('Taxista: $driverName $driverApellidos'),
-                        if (_selectedTab == 0)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.info_outline, size: 16),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'Pulsa para ver detalle',
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                              ],
+                        Row(
+                          children: [
+                            const Icon(Icons.info_outline, size: 16),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Pulsa para ver detalle',
+                              style: Theme.of(context).textTheme.bodySmall,
                             ),
-                          ),
+                          ],
+                        ),
                       ],
                     ),
                   ),

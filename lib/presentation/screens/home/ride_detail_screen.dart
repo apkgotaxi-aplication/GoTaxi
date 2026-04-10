@@ -7,10 +7,12 @@ class RideDetailScreen extends StatefulWidget {
     super.key,
     required this.rideId,
     required this.initialRide,
+    this.isDriverView = false,
   });
 
   final String rideId;
   final Map<String, dynamic> initialRide;
+  final bool isDriverView;
 
   @override
   State<RideDetailScreen> createState() => _RideDetailScreenState();
@@ -25,12 +27,16 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _detailFuture = fetchCurrentUserRideDetail(rideId: widget.rideId);
+    _detailFuture = widget.isDriverView
+        ? fetchCurrentUserDriverRideDetail(rideId: widget.rideId)
+        : fetchCurrentUserRideDetail(rideId: widget.rideId);
   }
 
   Future<void> _reload() async {
     setState(() {
-      _detailFuture = fetchCurrentUserRideDetail(rideId: widget.rideId);
+      _detailFuture = widget.isDriverView
+          ? fetchCurrentUserDriverRideDetail(rideId: widget.rideId)
+          : fetchCurrentUserRideDetail(rideId: widget.rideId);
     });
     await _detailFuture;
   }
@@ -56,6 +62,34 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
     return '${price.toStringAsFixed(2)} €';
   }
 
+  String _formatMinutes(dynamic rawValue) {
+    if (rawValue == null) return 'No disponible';
+    final minutes = int.tryParse(rawValue.toString());
+    if (minutes == null) return rawValue.toString();
+    if (minutes < 60) {
+      return '$minutes min';
+    }
+
+    final hours = minutes ~/ 60;
+    final remainingMinutes = minutes % 60;
+    if (remainingMinutes == 0) {
+      return '$hours h';
+    }
+
+    return '$hours h ${remainingMinutes} min';
+  }
+
+  String _formatActualDuration(Map<String, dynamic> detail) {
+    final start = DateTime.tryParse(detail['fecha_recogida']?.toString() ?? '');
+    final end = DateTime.tryParse(detail['fecha_entrega']?.toString() ?? '');
+
+    if (start == null || end == null || end.isBefore(start)) {
+      return 'No disponible';
+    }
+
+    return _formatMinutes(end.difference(start).inMinutes);
+  }
+
   String _buildDriverName(Map<String, dynamic> detail) {
     final nombre = detail['driver_nombre']?.toString().trim() ?? '';
     final apellidos = detail['driver_apellidos']?.toString().trim() ?? '';
@@ -68,6 +102,20 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
     final modelo = detail['vehiculo_modelo']?.toString().trim() ?? '';
     final composed = '$marca $modelo'.trim();
     return composed.isEmpty ? 'Vehiculo no disponible' : composed;
+  }
+
+  String _buildClientName(Map<String, dynamic> detail) {
+    final nombre = detail['cliente_nombre']?.toString().trim() ?? '';
+    final apellidos = detail['cliente_apellidos']?.toString().trim() ?? '';
+    final fullName = '$nombre $apellidos'.trim();
+    return fullName.isEmpty ? 'Sin cliente asignado' : fullName;
+  }
+
+  String _buildDriverLabel(Map<String, dynamic> detail) {
+    final nombre = detail['driver_nombre']?.toString().trim() ?? '';
+    final apellidos = detail['driver_apellidos']?.toString().trim() ?? '';
+    final fullName = '$nombre $apellidos'.trim();
+    return fullName.isEmpty ? 'Sin taxista asignado' : fullName;
   }
 
   Color _statusColor(String state, ColorScheme scheme) {
@@ -88,7 +136,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
   Future<void> _confirmAndCancelRide(Map<String, dynamic> detail) async {
     if (_isCancelling) return;
 
-    final canCancel = isRideCancelable(detail['estado']);
+    final canCancel = normalizeRideState(detail['estado']) == 'pendiente';
     if (!canCancel) return;
 
     final confirmed = await showDialog<bool>(
@@ -153,6 +201,46 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
     }
   }
 
+  Widget _buildInfoTile({
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: colorScheme.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -205,13 +293,19 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
           final colorScheme = Theme.of(context).colorScheme;
           final statusColor = _statusColor(state, colorScheme);
 
-          final phone =
-              (detail['driver_telefono']?.toString().trim() ?? '').isEmpty
-              ? 'No disponible'
-              : detail['driver_telefono'].toString().trim();
+          final clientName = _buildClientName(detail);
+          final driverName = _buildDriverLabel(detail);
+          final estimatedDuration = _formatMinutes(detail['duracion']);
+          final actualDuration = _formatActualDuration(detail);
+          final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
 
           return ListView(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.fromLTRB(
+              16,
+              16,
+              16,
+              MediaQuery.of(context).padding.bottom + 32,
+            ),
             children: [
               Card(
                 shape: RoundedRectangleBorder(
@@ -257,81 +351,135 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                         ],
                       ),
                       const SizedBox(height: 12),
-                      Text('Solicitado: ${_formatDate(detail['created_at'])}'),
-                      Text(
-                        'Recogida: ${_formatDate(detail['fecha_recogida'])}',
-                      ),
-                      Text('Entrega: ${_formatDate(detail['fecha_entrega'])}'),
-                      const SizedBox(height: 8),
-                      Text('Origen: ${detail['origen'] ?? 'No disponible'}'),
-                      Text('Destino: ${detail['destino'] ?? 'No disponible'}'),
-                      const SizedBox(height: 8),
-                      Text('Precio: ${_formatPrice(detail['precio'])}'),
-                      Text(
-                        'Pasajeros: ${detail['num_pasajeros'] ?? 'No disponible'}',
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Card(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Taxista',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
+                      if (widget.isDriverView) ...[
+                        _buildInfoTile(
+                          icon: Icons.schedule_outlined,
+                          label: 'Solicitado',
+                          value: _formatDate(detail['created_at']),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text('Nombre: ${_buildDriverName(detail)}'),
-                      Text('Telefono: $phone'),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Card(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Vehiculo',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.flight_takeoff_outlined,
+                          label: 'Recogida',
+                          value: _formatDate(detail['fecha_recogida']),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text('Modelo: ${_buildVehicleName(detail)}'),
-                      Text(
-                        'Matricula: ${detail['vehiculo_matricula'] ?? 'No disponible'}',
-                      ),
-                      Text(
-                        'Licencia: ${detail['vehiculo_licencia_taxi'] ?? 'No disponible'}',
-                      ),
-                      Text(
-                        'Color: ${detail['vehiculo_color'] ?? 'No disponible'}',
-                      ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.flag_outlined,
+                          label: 'Entrega',
+                          value: _formatDate(detail['fecha_entrega']),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.people_outline,
+                          label: 'Pasajeros',
+                          value:
+                              detail['num_pasajeros']?.toString() ??
+                              'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.timer_outlined,
+                          label: 'Tiempo aproximado',
+                          value: estimatedDuration,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.av_timer_outlined,
+                          label: 'Tiempo final calculado',
+                          value: actualDuration,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.place_outlined,
+                          label: 'Origen',
+                          value:
+                              detail['origen']?.toString() ?? 'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.location_on_outlined,
+                          label: 'Destino',
+                          value:
+                              detail['destino']?.toString() ?? 'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.payments_outlined,
+                          label: 'Precio',
+                          value: _formatPrice(detail['precio']),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.person_outline,
+                          label: 'Cliente',
+                          value: clientName,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.notes_outlined,
+                          label: 'Anotaciones del cliente',
+                          value: anotaciones.isEmpty
+                              ? 'Sin anotaciones'
+                              : anotaciones,
+                        ),
+                      ] else ...[
+                        _buildInfoTile(
+                          icon: Icons.place_outlined,
+                          label: 'Origen',
+                          value:
+                              detail['origen']?.toString() ?? 'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.location_on_outlined,
+                          label: 'Destino',
+                          value:
+                              detail['destino']?.toString() ?? 'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.payments_outlined,
+                          label: 'Precio',
+                          value: _formatPrice(detail['precio']),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.local_taxi_outlined,
+                          label: 'Taxista',
+                          value: driverName,
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
-              if (isRideCancelable(state))
+              if (!widget.isDriverView) ...[
+                const SizedBox(height: 10),
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Taxista',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text('Nombre: ${_buildDriverName(detail)}'),
+                        Text('Vehiculo: ${_buildVehicleName(detail)}'),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+              if (!widget.isDriverView &&
+                  normalizeRideState(detail['estado']) == 'pendiente') ...[
+                const SizedBox(height: 16),
                 FilledButton.icon(
                   onPressed: _isCancelling
                       ? null
@@ -352,6 +500,32 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                 ),
+              ],
+              if (widget.isDriverView) ...[
+                const SizedBox(height: 10),
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Cliente',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text('Nombre: $clientName'),
+                        Text(
+                          'Telefono: ${detail['cliente_telefono']?.toString() ?? 'No disponible'}',
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ],
           );
         },

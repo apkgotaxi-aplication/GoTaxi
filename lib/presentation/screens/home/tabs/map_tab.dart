@@ -12,7 +12,9 @@ import 'package:http/http.dart' as http;
 import 'package:gotaxi/utils/places_autocomplete_service.dart';
 
 class MapTab extends StatefulWidget {
-  const MapTab({super.key});
+  const MapTab({super.key, this.onRideRequested});
+
+  final ValueChanged<String>? onRideRequested;
 
   @override
   State<MapTab> createState() => _MapTabState();
@@ -35,6 +37,7 @@ class _MapTabState extends State<MapTab> {
     text: _defaultOriginText,
   );
   final TextEditingController _destinationController = TextEditingController();
+  final TextEditingController _annotationController = TextEditingController();
   final Set<Marker> _markers = <Marker>{};
   final Set<Polyline> _polylines = <Polyline>{};
 
@@ -66,6 +69,7 @@ class _MapTabState extends State<MapTab> {
   void dispose() {
     _originController.dispose();
     _destinationController.dispose();
+    _annotationController.dispose();
     _mapController?.dispose();
     _originDebounce?.cancel();
     _destinationDebounce?.cancel();
@@ -404,6 +408,8 @@ class _MapTabState extends State<MapTab> {
   Future<void> _createRide({required bool isReservation}) async {
     if (_loadingRoute || _requestingRide) return;
 
+    FocusScope.of(context).unfocus();
+
     if (_distanceMeters == null ||
         _durationSeconds == null ||
         _estimatedFareEur == null) {
@@ -417,6 +423,7 @@ class _MapTabState extends State<MapTab> {
     final distanceMeters = _distanceMeters;
     final durationSeconds = _durationSeconds;
     final fare = _estimatedFareEur;
+    final anotaciones = _annotationController.text.trim();
 
     if (origin == null ||
         destination == null ||
@@ -446,7 +453,7 @@ class _MapTabState extends State<MapTab> {
             : _originController.text.trim(),
         destino: _destinationController.text.trim(),
         numPasajeros: 1,
-        anotaciones: '',
+        anotaciones: anotaciones,
         distanciaKm: distanciaKm,
         precio: fare,
         duracionMin: duracionMinutos,
@@ -462,6 +469,11 @@ class _MapTabState extends State<MapTab> {
       final color = result.success
           ? Theme.of(context).colorScheme.primary
           : Theme.of(context).colorScheme.error;
+
+      if (result.success && !isReservation && widget.onRideRequested != null) {
+        widget.onRideRequested!(result.message);
+        return;
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(result.message), backgroundColor: color),
@@ -857,6 +869,20 @@ class _MapTabState extends State<MapTab> {
                       ],
                     ),
                   ],
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _annotationController,
+                    maxLines: 3,
+                    textInputAction: TextInputAction.done,
+                    decoration: InputDecoration(
+                      labelText: 'Anotaciones para el taxista (opcional)',
+                      hintText:
+                          'Ejemplo: portal 3, timbre 2B, acceso por rampa',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
                 ],
                 const SizedBox(height: 12),
                 if (_distanceText == null || _durationText == null) ...[

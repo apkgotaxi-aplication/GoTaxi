@@ -3,8 +3,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:gotaxi/presentation/screens/home/about_us_screen.dart';
 import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
 import 'package:gotaxi/presentation/screens/home/faq_screen.dart';
+import 'package:gotaxi/presentation/screens/home/ride_detail_screen.dart';
 import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
 import 'package:gotaxi/presentation/fragments/profile/admin_panel_fragment.dart';
+import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 import '../../../../utils/profile/user_personal_data_utils.dart';
 
 class ProfileTab extends StatefulWidget {
@@ -29,6 +31,7 @@ class _ProfileTabState extends State<ProfileTab> {
   bool _isAdmin = false;
   String? _error;
   String _userRole = '';
+  Map<String, dynamic>? _activeRide;
 
   @override
   void initState() {
@@ -41,6 +44,8 @@ class _ProfileTabState extends State<ProfileTab> {
       _loading = true;
       _error = null;
     });
+
+    Map<String, dynamic>? activeRide;
 
     try {
       final user = _supabase.auth.currentUser;
@@ -81,6 +86,8 @@ class _ProfileTabState extends State<ProfileTab> {
         if (clienteResponse != null) {
           _isAdmin = clienteResponse['is_admin'] == true;
         }
+
+        activeRide = await _fetchActiveRideForCliente();
       } else if (_userRole == 'taxista') {
         // Buscar is_admin en tabla taxistas
         final taxistaResponse = await _supabase
@@ -92,12 +99,53 @@ class _ProfileTabState extends State<ProfileTab> {
         if (taxistaResponse != null) {
           _isAdmin = taxistaResponse['is_admin'] == true;
         }
+
+        activeRide = null;
       }
     } catch (e) {
       _error = 'Error al cargar el perfil: $e';
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _activeRide = activeRide;
+          _loading = false;
+        });
+      }
     }
+  }
+
+  Future<Map<String, dynamic>?> _fetchActiveRideForCliente() async {
+    try {
+      final rides = await fetchCurrentUserRideHistory(limit: 50);
+      for (final ride in rides) {
+        final state = normalizeRideState(ride['estado']);
+        if (state != 'cancelada' && state != 'finalizada') {
+          return ride;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _showActiveRideDetail() async {
+    final activeRide = _activeRide;
+    final rideId = activeRide?['id']?.toString();
+    if (activeRide == null || rideId == null || rideId.isEmpty) return;
+
+    final updatedRide = await Navigator.of(context).push<Map<String, dynamic>>(
+      MaterialPageRoute(
+        builder: (_) =>
+            RideDetailScreen(rideId: rideId, initialRide: activeRide),
+      ),
+    );
+
+    if (!mounted || updatedRide == null) return;
+
+    setState(() {
+      _activeRide = {...activeRide, ...updatedRide};
+    });
   }
 
   Future<void> _saveProfile() async {
@@ -314,10 +362,38 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  void _showMisViajesSheet() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const RideHistoryScreen()));
+  Future<void> _showMisViajesSheet() async {
+    final initialTab = await _resolveHistoryInitialTab();
+    if (!mounted) return;
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RideHistoryScreen(initialTab: initialTab),
+      ),
+    );
+  }
+
+  Future<int> _resolveHistoryInitialTab() async {
+    if (_userRole == 'taxista') {
+      return 1;
+    }
+
+    if (_userRole.isNotEmpty) {
+      return 0;
+    }
+
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      return 0;
+    }
+
+    final response = await _supabase
+        .from('usuarios')
+        .select('rol')
+        .eq('id', user.id)
+        .maybeSingle();
+
+    return response != null && response['rol'] == 'taxista' ? 1 : 0;
   }
 
   void _showFavoritosSheet() {
@@ -683,6 +759,13 @@ class _ProfileTabState extends State<ProfileTab> {
     }
 
     final viajesItems = [
+      if (_isCliente && _activeRide != null)
+        _MenuItem(
+          icon: Icons.local_taxi,
+          title: 'Viaje en curso',
+          color: Colors.deepOrange,
+          onTap: _showActiveRideDetail,
+        ),
       _MenuItem(
         icon: Icons.directions_car,
         title: 'Historial de viajes',
