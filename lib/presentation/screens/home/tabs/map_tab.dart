@@ -66,11 +66,7 @@ class _MapTabState extends State<MapTab> {
 
   // Favorites state
   List<FavoriteLocation> _favorites = [];
-  bool _showOriginFavorites = false;
-  bool _showDestinationFavorites = false;
-  String? _selectedFieldForSave; // 'origin' o 'destination'
-  String? _favoriteSaveName;
-  String _favoriteType = 'otro';
+  static const int _maxVisibleFavorites = 4;
 
   // ubicación por defecto
   static const LatLng _defaultPosition = LatLng(40.4168, -3.7038);
@@ -123,40 +119,78 @@ class _MapTabState extends State<MapTab> {
     }
   }
 
-  void _selectFavoriteAsOrigin(FavoriteLocation favorite) {
+  List<FavoriteLocation> get _visibleFavorites {
+    return _favorites
+        .where((favorite) => favorite.visibleEnMapa)
+        .take(_maxVisibleFavorites)
+        .toList();
+  }
+
+  IconData _favoriteIcon(FavoriteLocation favorite) {
+    if (favorite.tipo == 'casa') return Icons.home;
+    if (favorite.tipo == 'trabajo') return Icons.work;
+    return Icons.place;
+  }
+
+  String _favoriteDisplayName(FavoriteLocation favorite) {
+    if (favorite.tipo == 'casa') return 'Casa';
+    if (favorite.tipo == 'trabajo') return 'Trabajo';
+    return favorite.nombre;
+  }
+
+  void _setFavoriteAsOrigin(FavoriteLocation favorite) {
     _originDebounce?.cancel();
     _originController.removeListener(_onOriginChanged);
     _originController.text = favorite.direccion;
     _lastOrigin = LatLng(favorite.latitud, favorite.longitud);
     _originController.addListener(_onOriginChanged);
     setState(() {
-      _showOriginFavorites = false;
       _originSuggestions = [];
     });
   }
 
-  void _selectFavoriteAsDestination(FavoriteLocation favorite) {
+  void _setFavoriteAsDestination(FavoriteLocation favorite) {
     _destinationDebounce?.cancel();
     _destinationController.removeListener(_onDestinationChanged);
     _destinationController.text = favorite.direccion;
     _lastDestination = LatLng(favorite.latitud, favorite.longitud);
     _destinationController.addListener(_onDestinationChanged);
     setState(() {
-      _showDestinationFavorites = false;
       _destinationSuggestions = [];
     });
   }
 
-  Future<void> _saveFavorite(String field) async {
-    if (_selectedFieldForSave == null || _favoriteSaveName == null) return;
+  void _applyFavoriteToEmptyField(FavoriteLocation favorite) {
+    final destinationText = _destinationController.text.trim();
+    final originText = _originController.text.trim();
+    final originIsDefault =
+        originText.toLowerCase() == _defaultOriginText.toLowerCase();
 
-    final isOrigin = _selectedFieldForSave == 'origin';
-    final point = isOrigin ? _lastOrigin : _lastDestination;
+    if (destinationText.isEmpty) {
+      _setFavoriteAsDestination(favorite);
+      return;
+    }
+
+    if (originText.isEmpty || originIsDefault) {
+      _setFavoriteAsOrigin(favorite);
+      return;
+    }
+
+    _setFavoriteAsDestination(favorite);
+  }
+
+  Future<void> _saveFavorite({
+    required String field,
+    required String type,
+    String? customName,
+    required bool visibleOnMap,
+  }) async {
+    final isOrigin = field == 'origin';
     final address = isOrigin
-        ? _originController.text
-        : _destinationController.text;
+        ? _originController.text.trim()
+        : _destinationController.text.trim();
 
-    if (point == null || address.isEmpty) {
+    if (address.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -167,24 +201,53 @@ class _MapTabState extends State<MapTab> {
       return;
     }
 
+    if (type == 'otro' && (customName == null || customName.trim().isEmpty)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Para "otro" debes indicar un nombre.')),
+        );
+      }
+      return;
+    }
+
+    if (visibleOnMap && _visibleFavorites.length >= _maxVisibleFavorites) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Solo puedes tener 4 favoritos visibles.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    final resolvedPoint = await _resolvePointFromText(
+      address,
+      isOrigin: isOrigin,
+    );
+
+    final favoriteName = type == 'casa'
+        ? 'Casa'
+        : type == 'trabajo'
+        ? 'Trabajo'
+        : customName!.trim();
+
     try {
       final success = await _favoritesService.addFavorite(
-        nombre: _favoriteSaveName!,
-        latitud: point.latitude,
-        longitud: point.longitude,
+        nombre: favoriteName,
+        latitud: resolvedPoint.latitude,
+        longitud: resolvedPoint.longitude,
         direccion: address,
-        tipo: _favoriteType,
+        tipo: type,
+        visibleEnMapa: visibleOnMap,
       );
 
       if (mounted) {
         if (success) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Favorito "$_favoriteSaveName" guardado')),
+            SnackBar(content: Text('Favorito "$favoriteName" guardado')),
           );
           _loadFavorites();
-          _favoriteSaveName = null;
-          _favoriteType = 'otro';
-          Navigator.of(context).pop();
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Error al guardar el favorito')),
@@ -200,81 +263,112 @@ class _MapTabState extends State<MapTab> {
     }
   }
 
-  void _showSaveFavoriteDialog(String field) {
-    _selectedFieldForSave = field;
-    _favoriteSaveName = null;
-    _favoriteType = 'otro';
+  void _openFavoritesSheet(String field) {
+    String type = 'casa';
+    String customName = '';
+    bool visibleOnMap = true;
 
-    showDialog(
+    showModalBottomSheet<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Guardar ubicación favorita'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              decoration: const InputDecoration(
-                labelText: 'Nombre del favorito',
-                hintText: 'Ej: Casa, Trabajo, Gimnasio',
-                border: OutlineInputBorder(),
+      isScrollControlled: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                  bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Favoritos',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        initialValue: type,
+                        decoration: const InputDecoration(
+                          labelText: 'Tipo de ubicación',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 'casa', child: Text('Casa')),
+                          DropdownMenuItem(
+                            value: 'trabajo',
+                            child: Text('Trabajo'),
+                          ),
+                          DropdownMenuItem(value: 'otro', child: Text('Otro')),
+                        ],
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setModalState(() {
+                            type = value;
+                          });
+                        },
+                      ),
+                      if (type == 'otro') ...[
+                        const SizedBox(height: 12),
+                        TextField(
+                          decoration: const InputDecoration(
+                            labelText: 'Nombre del favorito',
+                            hintText: 'Ej: Gimnasio',
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (value) {
+                            customName = value;
+                          },
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      SwitchListTile.adaptive(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Mostrar en lista visible del mapa'),
+                        subtitle: Text(
+                          'Máximo $_maxVisibleFavorites visibles (actual: ${_visibleFavorites.length})',
+                        ),
+                        value: visibleOnMap,
+                        onChanged: (value) {
+                          setModalState(() {
+                            visibleOnMap = value;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: () async {
+                            await _saveFavorite(
+                              field: field,
+                              type: type,
+                              customName: customName,
+                              visibleOnMap: visibleOnMap,
+                            );
+                            if (!context.mounted) return;
+                            Navigator.of(context).pop();
+                          },
+                          child: const Text('Guardar ubicación actual'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-              onChanged: (value) => _favoriteSaveName = value.trim(),
-            ),
-            const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              value: _favoriteType,
-              decoration: const InputDecoration(
-                labelText: 'Tipo de ubicación',
-                border: OutlineInputBorder(),
-              ),
-              items: const [
-                DropdownMenuItem(value: 'casa', child: Text('Casa')),
-                DropdownMenuItem(value: 'trabajo', child: Text('Trabajo')),
-                DropdownMenuItem(value: 'otro', child: Text('Otro')),
-              ],
-              onChanged: (value) => _favoriteType = value ?? 'otro',
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed:
-                _favoriteSaveName != null && _favoriteSaveName!.isNotEmpty
-                ? () => _saveFavorite(field)
-                : null,
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
+            );
+          },
+        );
+      },
     );
-  }
-
-  Future<void> _deleteFavorite(FavoriteLocation favorite) async {
-    try {
-      final success = await _favoritesService.deleteFavorite(favorite.id);
-      if (mounted) {
-        if (success) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Favorito "${favorite.nombre}" eliminado')),
-          );
-          _loadFavorites();
-        } else {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('Error al eliminar')));
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error: ${e.toString()}')));
-      }
-    }
   }
 
   Future<void> _fetchOriginSuggestions(String input) async {
@@ -810,94 +904,11 @@ class _MapTabState extends State<MapTab> {
                         ),
                         IconButton(
                           icon: const Icon(Icons.star),
-                          onPressed: () => setState(
-                            () => _showOriginFavorites = !_showOriginFavorites,
-                          ),
-                          tooltip: 'Ver favoritos',
-                          isSelected: _showOriginFavorites,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.favorite),
-                          onPressed: () => _showSaveFavoriteDialog('origin'),
-                          tooltip: 'Guardar como favorito',
+                          onPressed: () => _openFavoritesSheet('origin'),
+                          tooltip: 'Favoritos',
                         ),
                       ],
                     ),
-                    if (_showOriginFavorites && _favorites.isNotEmpty) ...[
-                      Container(
-                        constraints: const BoxConstraints(maxHeight: 150),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surfaceContainerHighest,
-                          borderRadius: const BorderRadius.only(
-                            bottomLeft: Radius.circular(12),
-                            bottomRight: Radius.circular(12),
-                          ),
-                          border: Border(
-                            bottom: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                            left: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                            right: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                          ),
-                        ),
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: _favorites.length,
-                          itemBuilder: (context, index) {
-                            final favorite = _favorites[index];
-                            return InkWell(
-                              onTap: () => _selectFavoriteAsOrigin(favorite),
-                              onLongPress: () => _deleteFavorite(favorite),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 8,
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      favorite.tipo == 'casa'
-                                          ? Icons.home
-                                          : favorite.tipo == 'trabajo'
-                                          ? Icons.work
-                                          : Icons.location_on,
-                                      size: 18,
-                                      color: theme.colorScheme.primary,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            favorite.nombre,
-                                            style: theme.textTheme.bodyMedium
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                          ),
-                                          Text(
-                                            favorite.direccion,
-                                            style: theme.textTheme.bodySmall,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ],
                     if (_showOriginSuggestions) ...[
                       Container(
                         constraints: const BoxConstraints(maxHeight: 200),
@@ -997,94 +1008,30 @@ class _MapTabState extends State<MapTab> {
                         ),
                         IconButton(
                           icon: const Icon(Icons.star),
-                          onPressed: () => setState(
-                            () => _showDestinationFavorites =
-                                !_showDestinationFavorites,
-                          ),
-                          tooltip: 'Ver favoritos',
-                          isSelected: _showDestinationFavorites,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.favorite),
-                          onPressed: () =>
-                              _showSaveFavoriteDialog('destination'),
-                          tooltip: 'Guardar como favorito',
+                          onPressed: () => _openFavoritesSheet('destination'),
+                          tooltip: 'Favoritos',
                         ),
                       ],
                     ),
-                    if (_showDestinationFavorites && _favorites.isNotEmpty) ...[
-                      Container(
-                        constraints: const BoxConstraints(maxHeight: 150),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surfaceContainerHighest,
-                          borderRadius: const BorderRadius.only(
-                            bottomLeft: Radius.circular(12),
-                            bottomRight: Radius.circular(12),
-                          ),
-                          border: Border(
-                            bottom: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                            left: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                            right: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                          ),
-                        ),
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: _favorites.length,
-                          itemBuilder: (context, index) {
-                            final favorite = _favorites[index];
-                            return InkWell(
-                              onTap: () =>
-                                  _selectFavoriteAsDestination(favorite),
-                              onLongPress: () => _deleteFavorite(favorite),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 8,
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      favorite.tipo == 'casa'
-                                          ? Icons.home
-                                          : favorite.tipo == 'trabajo'
-                                          ? Icons.work
-                                          : Icons.location_on,
-                                      size: 18,
-                                      color: theme.colorScheme.primary,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            favorite.nombre,
-                                            style: theme.textTheme.bodyMedium
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                          ),
-                                          Text(
-                                            favorite.direccion,
-                                            style: theme.textTheme.bodySmall,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                    if (_visibleFavorites.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _visibleFavorites.map((favorite) {
+                            return ActionChip(
+                              avatar: Icon(
+                                _favoriteIcon(favorite),
+                                size: 18,
+                                color: theme.colorScheme.primary,
                               ),
+                              label: Text(_favoriteDisplayName(favorite)),
+                              onPressed: () =>
+                                  _applyFavoriteToEmptyField(favorite),
                             );
-                          },
+                          }).toList(),
                         ),
                       ),
                     ],

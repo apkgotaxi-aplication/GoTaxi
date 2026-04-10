@@ -9,6 +9,7 @@ class FavoriteLocation {
   final double longitud;
   final String direccion;
   final String tipo; // 'casa', 'trabajo', 'otro'
+  final bool visibleEnMapa;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -21,6 +22,7 @@ class FavoriteLocation {
     required this.longitud,
     required this.direccion,
     required this.tipo,
+    required this.visibleEnMapa,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -35,6 +37,7 @@ class FavoriteLocation {
       longitud: (json['longitud'] as num).toDouble(),
       direccion: json['direccion'] as String,
       tipo: json['tipo'] as String? ?? 'otro',
+      visibleEnMapa: json['visible_en_mapa'] as bool? ?? false,
       createdAt: DateTime.parse(json['created_at'] as String),
       updatedAt: DateTime.parse(json['updated_at'] as String),
     );
@@ -49,6 +52,7 @@ class FavoriteLocation {
     'longitud': longitud,
     'direccion': direccion,
     'tipo': tipo,
+    'visible_en_mapa': visibleEnMapa,
     'created_at': createdAt.toIso8601String(),
     'updated_at': updatedAt.toIso8601String(),
   };
@@ -83,27 +87,21 @@ class FavoritesService {
     required String direccion,
     String tipo = 'otro',
     String? descripcion,
+    bool visibleEnMapa = false,
   }) async {
     try {
-      final response =
-          await _supabase.rpc(
-                'add_favorite_location',
-                params: {
-                  'p_nombre': nombre,
-                  'p_latitud': latitud,
-                  'p_longitud': longitud,
-                  'p_direccion': direccion,
-                  'p_tipo': tipo,
-                  'p_descripcion': descripcion,
-                },
-              )
-              as List<dynamic>;
+      await _supabase.from('lugares_favoritos').insert({
+        'cliente_id': _supabase.auth.currentUser!.id,
+        'nombre': nombre,
+        'descripcion': descripcion,
+        'latitud': latitud,
+        'longitud': longitud,
+        'direccion': direccion,
+        'tipo': tipo,
+        'visible_en_mapa': visibleEnMapa,
+      });
 
-      if (response.isNotEmpty) {
-        final result = response.first as Map<String, dynamic>;
-        return result['success'] as bool? ?? false;
-      }
-      return false;
+      return true;
     } catch (e) {
       rethrow;
     }
@@ -135,6 +133,7 @@ class FavoritesService {
     String? nombre,
     String? descripcion,
     String? tipo,
+    bool? visibleEnMapa,
   }) async {
     try {
       final updates = <String, dynamic>{
@@ -144,6 +143,9 @@ class FavoritesService {
       if (nombre != null) updates['nombre'] = nombre;
       if (descripcion != null) updates['descripcion'] = descripcion;
       if (tipo != null) updates['tipo'] = tipo;
+      if (visibleEnMapa != null) {
+        updates['visible_en_mapa'] = visibleEnMapa;
+      }
 
       await _supabase
           .from('lugares_favoritos')
@@ -152,6 +154,37 @@ class FavoritesService {
           .eq('cliente_id', _supabase.auth.currentUser!.id);
 
       return true;
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  Future<int> countVisibleFavorites() async {
+    try {
+      final response = await _supabase
+          .from('lugares_favoritos')
+          .select('id')
+          .eq('visible_en_mapa', true);
+      return (response as List).length;
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  Future<List<FavoriteLocation>> getVisibleFavorites({int limit = 4}) async {
+    try {
+      final response = await _supabase
+          .from('lugares_favoritos')
+          .select()
+          .eq('visible_en_mapa', true)
+          .order('created_at', ascending: false)
+          .limit(limit);
+
+      return (response as List)
+          .map(
+            (json) => FavoriteLocation.fromJson(json as Map<String, dynamic>),
+          )
+          .toList();
     } catch (e) {
       rethrow;
     }
