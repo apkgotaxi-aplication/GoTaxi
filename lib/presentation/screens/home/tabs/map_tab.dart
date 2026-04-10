@@ -67,6 +67,7 @@ class _MapTabState extends State<MapTab> {
   // Favorites state
   List<FavoriteLocation> _favorites = [];
   static const int _maxVisibleFavorites = 4;
+  static const int _maxFavoriteNameLength = 15;
 
   // ubicación por defecto
   static const LatLng _defaultPosition = LatLng(40.4168, -3.7038);
@@ -210,6 +211,19 @@ class _MapTabState extends State<MapTab> {
       return;
     }
 
+    if (type == 'otro' && customName!.trim().length > _maxFavoriteNameLength) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'El nombre del favorito no puede superar $_maxFavoriteNameLength caracteres.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
     if (visibleOnMap && _visibleFavorites.length >= _maxVisibleFavorites) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -319,10 +333,13 @@ class _MapTabState extends State<MapTab> {
                       if (type == 'otro') ...[
                         const SizedBox(height: 12),
                         TextField(
-                          decoration: const InputDecoration(
+                          maxLength: _maxFavoriteNameLength,
+                          decoration: InputDecoration(
                             labelText: 'Nombre del favorito',
                             hintText: 'Ej: Gimnasio',
-                            border: OutlineInputBorder(),
+                            border: const OutlineInputBorder(),
+                            helperText:
+                                'Máximo $_maxFavoriteNameLength caracteres',
                           ),
                           onChanged: (value) {
                             customName = value;
