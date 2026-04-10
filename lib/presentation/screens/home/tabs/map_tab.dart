@@ -8,6 +8,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
 import 'package:gotaxi/data/services/tarifa_service.dart';
+import 'package:gotaxi/data/services/favorites_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:gotaxi/utils/places_autocomplete_service.dart';
 
@@ -28,6 +29,7 @@ class _MapTabState extends State<MapTab> {
   late PlacesAutocompleteService _placesService;
   final RideService _rideService = RideService();
   final TarifaService _tarifaService = TarifaService();
+  final FavoritesService _favoritesService = FavoritesService();
 
   GoogleMapController? _mapController;
   LatLng? _currentPosition;
@@ -62,6 +64,14 @@ class _MapTabState extends State<MapTab> {
   Timer? _originDebounce;
   Timer? _destinationDebounce;
 
+  // Favorites state
+  List<FavoriteLocation> _favorites = [];
+  bool _showOriginFavorites = false;
+  bool _showDestinationFavorites = false;
+  String? _selectedFieldForSave; // 'origin' o 'destination'
+  String? _favoriteSaveName;
+  String _favoriteType = 'otro';
+
   // ubicación por defecto
   static const LatLng _defaultPosition = LatLng(40.4168, -3.7038);
 
@@ -83,6 +93,7 @@ class _MapTabState extends State<MapTab> {
     _originController.addListener(_onOriginChanged);
     _destinationController.addListener(_onDestinationChanged);
     _determinePosition();
+    _loadFavorites();
   }
 
   void _onOriginChanged() {
@@ -97,6 +108,173 @@ class _MapTabState extends State<MapTab> {
     _destinationDebounce = Timer(const Duration(milliseconds: 400), () {
       _fetchDestinationSuggestions(_destinationController.text);
     });
+  }
+
+  Future<void> _loadFavorites() async {
+    try {
+      final favorites = await _favoritesService.getMyFavorites();
+      if (mounted) {
+        setState(() {
+          _favorites = favorites;
+        });
+      }
+    } catch (e) {
+      // Silently handle errors, just don't load favorites
+    }
+  }
+
+  void _selectFavoriteAsOrigin(FavoriteLocation favorite) {
+    _originDebounce?.cancel();
+    _originController.removeListener(_onOriginChanged);
+    _originController.text = favorite.direccion;
+    _lastOrigin = LatLng(favorite.latitud, favorite.longitud);
+    _originController.addListener(_onOriginChanged);
+    setState(() {
+      _showOriginFavorites = false;
+      _originSuggestions = [];
+    });
+  }
+
+  void _selectFavoriteAsDestination(FavoriteLocation favorite) {
+    _destinationDebounce?.cancel();
+    _destinationController.removeListener(_onDestinationChanged);
+    _destinationController.text = favorite.direccion;
+    _lastDestination = LatLng(favorite.latitud, favorite.longitud);
+    _destinationController.addListener(_onDestinationChanged);
+    setState(() {
+      _showDestinationFavorites = false;
+      _destinationSuggestions = [];
+    });
+  }
+
+  Future<void> _saveFavorite(String field) async {
+    if (_selectedFieldForSave == null || _favoriteSaveName == null) return;
+
+    final isOrigin = _selectedFieldForSave == 'origin';
+    final point = isOrigin ? _lastOrigin : _lastDestination;
+    final address = isOrigin
+        ? _originController.text
+        : _destinationController.text;
+
+    if (point == null || address.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Selecciona una ubicación válida primero'),
+          ),
+        );
+      }
+      return;
+    }
+
+    try {
+      final success = await _favoritesService.addFavorite(
+        nombre: _favoriteSaveName!,
+        latitud: point.latitude,
+        longitud: point.longitude,
+        direccion: address,
+        tipo: _favoriteType,
+      );
+
+      if (mounted) {
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Favorito "$_favoriteSaveName" guardado')),
+          );
+          _loadFavorites();
+          _favoriteSaveName = null;
+          _favoriteType = 'otro';
+          Navigator.of(context).pop();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Error al guardar el favorito')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: ${e.toString()}')));
+      }
+    }
+  }
+
+  void _showSaveFavoriteDialog(String field) {
+    _selectedFieldForSave = field;
+    _favoriteSaveName = null;
+    _favoriteType = 'otro';
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Guardar ubicación favorita'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              decoration: const InputDecoration(
+                labelText: 'Nombre del favorito',
+                hintText: 'Ej: Casa, Trabajo, Gimnasio',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (value) => _favoriteSaveName = value.trim(),
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              value: _favoriteType,
+              decoration: const InputDecoration(
+                labelText: 'Tipo de ubicación',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'casa', child: Text('Casa')),
+                DropdownMenuItem(value: 'trabajo', child: Text('Trabajo')),
+                DropdownMenuItem(value: 'otro', child: Text('Otro')),
+              ],
+              onChanged: (value) => _favoriteType = value ?? 'otro',
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed:
+                _favoriteSaveName != null && _favoriteSaveName!.isNotEmpty
+                ? () => _saveFavorite(field)
+                : null,
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteFavorite(FavoriteLocation favorite) async {
+    try {
+      final success = await _favoritesService.deleteFavorite(favorite.id);
+      if (mounted) {
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Favorito "${favorite.nombre}" eliminado')),
+          );
+          _loadFavorites();
+        } else {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Error al eliminar')));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: ${e.toString()}')));
+      }
+    }
   }
 
   Future<void> _fetchOriginSuggestions(String input) async {
@@ -630,8 +808,96 @@ class _MapTabState extends State<MapTab> {
                             ),
                           ),
                         ),
+                        IconButton(
+                          icon: const Icon(Icons.star),
+                          onPressed: () => setState(
+                            () => _showOriginFavorites = !_showOriginFavorites,
+                          ),
+                          tooltip: 'Ver favoritos',
+                          isSelected: _showOriginFavorites,
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.favorite),
+                          onPressed: () => _showSaveFavoriteDialog('origin'),
+                          tooltip: 'Guardar como favorito',
+                        ),
                       ],
                     ),
+                    if (_showOriginFavorites && _favorites.isNotEmpty) ...[
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 150),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surfaceContainerHighest,
+                          borderRadius: const BorderRadius.only(
+                            bottomLeft: Radius.circular(12),
+                            bottomRight: Radius.circular(12),
+                          ),
+                          border: Border(
+                            bottom: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                            left: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                            right: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                          ),
+                        ),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _favorites.length,
+                          itemBuilder: (context, index) {
+                            final favorite = _favorites[index];
+                            return InkWell(
+                              onTap: () => _selectFavoriteAsOrigin(favorite),
+                              onLongPress: () => _deleteFavorite(favorite),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 8,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      favorite.tipo == 'casa'
+                                          ? Icons.home
+                                          : favorite.tipo == 'trabajo'
+                                          ? Icons.work
+                                          : Icons.location_on,
+                                      size: 18,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            favorite.nombre,
+                                            style: theme.textTheme.bodyMedium
+                                                ?.copyWith(
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                          ),
+                                          Text(
+                                            favorite.direccion,
+                                            style: theme.textTheme.bodySmall,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                     if (_showOriginSuggestions) ...[
                       Container(
                         constraints: const BoxConstraints(maxHeight: 200),
@@ -729,8 +995,99 @@ class _MapTabState extends State<MapTab> {
                             ),
                           ),
                         ),
+                        IconButton(
+                          icon: const Icon(Icons.star),
+                          onPressed: () => setState(
+                            () => _showDestinationFavorites =
+                                !_showDestinationFavorites,
+                          ),
+                          tooltip: 'Ver favoritos',
+                          isSelected: _showDestinationFavorites,
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.favorite),
+                          onPressed: () =>
+                              _showSaveFavoriteDialog('destination'),
+                          tooltip: 'Guardar como favorito',
+                        ),
                       ],
                     ),
+                    if (_showDestinationFavorites && _favorites.isNotEmpty) ...[
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 150),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surfaceContainerHighest,
+                          borderRadius: const BorderRadius.only(
+                            bottomLeft: Radius.circular(12),
+                            bottomRight: Radius.circular(12),
+                          ),
+                          border: Border(
+                            bottom: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                            left: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                            right: BorderSide(
+                              color: theme.colorScheme.outlineVariant,
+                            ),
+                          ),
+                        ),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _favorites.length,
+                          itemBuilder: (context, index) {
+                            final favorite = _favorites[index];
+                            return InkWell(
+                              onTap: () =>
+                                  _selectFavoriteAsDestination(favorite),
+                              onLongPress: () => _deleteFavorite(favorite),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 8,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      favorite.tipo == 'casa'
+                                          ? Icons.home
+                                          : favorite.tipo == 'trabajo'
+                                          ? Icons.work
+                                          : Icons.location_on,
+                                      size: 18,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            favorite.nombre,
+                                            style: theme.textTheme.bodyMedium
+                                                ?.copyWith(
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                          ),
+                                          Text(
+                                            favorite.direccion,
+                                            style: theme.textTheme.bodySmall,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                     if (_showDestinationSuggestions) ...[
                       Container(
                         constraints: const BoxConstraints(maxHeight: 200),
