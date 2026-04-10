@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class RideAssignmentResult {
@@ -51,6 +53,55 @@ class RideService {
     : _supabase = supabase ?? Supabase.instance.client;
 
   final SupabaseClient _supabase;
+
+  static const String _functionsUrl =
+      'https://vkewprpynejnmobgpbiu.supabase.co/functions/v1/send-notification';
+
+  Future<void> _sendPushNotification({
+    required String userId,
+    required String title,
+    required String body,
+    Map<String, dynamic>? data,
+  }) async {
+    try {
+      await http.post(
+        Uri.parse(_functionsUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'user_id': userId,
+          'title': title,
+          'body': body,
+          'data': data,
+        }),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _notifyRideAssignment({
+    required String clienteId,
+    required String? taxistaId,
+    required String? viajeId,
+    required String origen,
+    required String destino,
+  }) async {
+    if (taxistaId != null && viajeId != null) {
+      await _sendPushNotification(
+        userId: taxistaId,
+        title: 'Nuevo viaje asignado',
+        body: 'Se te ha asignado un viaje de $origen a $destino',
+        data: {'viaje_id': viajeId, 'tipo': 'nuevo_viaje'},
+      );
+    }
+
+    if (viajeId != null) {
+      await _sendPushNotification(
+        userId: clienteId,
+        title: 'Viaje solicitado',
+        body: 'Hemos encontrado un taxista para tu viaje',
+        data: {'viaje_id': viajeId, 'tipo': 'taxista_asignado'},
+      );
+    }
+  }
 
   Future<RideCancellationResult> cancelRide({required String viajeId}) async {
     final user = _supabase.auth.currentUser;
@@ -118,14 +169,34 @@ class RideService {
       final result = RideAssignmentResult.fromMap(
         Map<String, dynamic>.from(raw.first as Map),
       );
-      return _mapErrorMessage(result, numPasajeros);
+      final mappedResult = _mapErrorMessage(result, numPasajeros);
+      if (mappedResult.success) {
+        _notifyRideAssignment(
+          clienteId: user.id,
+          taxistaId: mappedResult.taxistaId,
+          viajeId: mappedResult.viajeId,
+          origen: origen,
+          destino: destino,
+        );
+      }
+      return mappedResult;
     }
 
     if (raw is Map) {
       final result = RideAssignmentResult.fromMap(
         Map<String, dynamic>.from(raw),
       );
-      return _mapErrorMessage(result, numPasajeros);
+      final mappedResult = _mapErrorMessage(result, numPasajeros);
+      if (mappedResult.success) {
+        _notifyRideAssignment(
+          clienteId: user.id,
+          taxistaId: mappedResult.taxistaId,
+          viajeId: mappedResult.viajeId,
+          origen: origen,
+          destino: destino,
+        );
+      }
+      return mappedResult;
     }
 
     return const RideAssignmentResult(

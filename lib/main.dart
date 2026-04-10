@@ -3,6 +3,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import './presentation/screens/auth/auth_screen.dart';
 import './presentation/screens/home/home_screen.dart';
+import './data/services/notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,8 +18,8 @@ void main() async {
     );
   }
 
-  // Supabase credentials
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+  await NotificationService().initialize();
 
   runApp(const MyApp());
 }

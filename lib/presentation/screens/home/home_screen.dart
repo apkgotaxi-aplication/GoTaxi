@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:gotaxi/data/services/notification_service.dart';
 import 'package:gotaxi/presentation/screens/home/tabs/driver_dashboard_tab.dart';
 import 'package:gotaxi/presentation/screens/home/tabs/map_tab.dart';
 import 'package:gotaxi/presentation/screens/home/tabs/profile_tab.dart';
@@ -22,6 +23,14 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadRole();
+    _loginOneSignal();
+  }
+
+  Future<void> _loginOneSignal() async {
+    final user = _supabase.auth.currentUser;
+    if (user != null) {
+      await NotificationService().login(user.id);
+    }
   }
 
   Future<void> _loadRole() async {

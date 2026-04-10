@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class TaxistaActionResult {
@@ -61,6 +63,53 @@ class DriverDashboardData {
 
 class TaxistaService {
   final SupabaseClient _supabase = Supabase.instance.client;
+
+  static const String _functionsUrl =
+      'https://vkewprpynejnmobgpbiu.supabase.co/functions/v1/send-notification';
+
+  Future<void> _sendPushNotification({
+    required String userId,
+    required String title,
+    required String body,
+    Map<String, dynamic>? data,
+  }) async {
+    try {
+      await http.post(
+        Uri.parse(_functionsUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'user_id': userId,
+          'title': title,
+          'body': body,
+          'data': data,
+        }),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _notifyClienteViaje({
+    required String viajeId,
+    required String title,
+    required String body,
+    String? tipo,
+  }) async {
+    try {
+      final viaje = await _supabase
+          .from('viajes')
+          .select('user_id')
+          .eq('id', viajeId)
+          .maybeSingle();
+
+      if (viaje != null) {
+        await _sendPushNotification(
+          userId: viaje['user_id'] as String,
+          title: title,
+          body: body,
+          data: {'viaje_id': viajeId, 'tipo': tipo},
+        );
+      }
+    } catch (_) {}
+  }
 
   Future<void> createTaxista({
     required String nombre,
@@ -375,38 +424,90 @@ class TaxistaService {
   }
 
   Future<TaxistaActionResult> confirmRideByDriver({required String viajeId}) {
-    return _runDriverRideAction('confirm_ride_by_driver', viajeId);
+    return _runDriverRideAction(
+      'confirm_ride_by_driver',
+      viajeId,
+      onSuccess: () async {
+        await _notifyClienteViaje(
+          viajeId: viajeId,
+          title: 'Taxista en camino',
+          body: 'El taxista ha confirmado tu viaje y está en camino',
+          tipo: 'taxista_confirmado',
+        );
+      },
+    );
   }
 
   Future<TaxistaActionResult> cancelRideByDriver({required String viajeId}) {
-    return _runDriverRideAction('cancel_ride_by_driver', viajeId);
+    return _runDriverRideAction(
+      'cancel_ride_by_driver',
+      viajeId,
+      onSuccess: () async {
+        await _notifyClienteViaje(
+          viajeId: viajeId,
+          title: 'Viaje cancelado',
+          body: 'El taxista ha cancelado el viaje',
+          tipo: 'viaje_cancelado',
+        );
+      },
+    );
   }
 
   Future<TaxistaActionResult> startRideByDriver({required String viajeId}) {
-    return _runDriverRideAction('start_ride_by_driver', viajeId);
+    return _runDriverRideAction(
+      'start_ride_by_driver',
+      viajeId,
+      onSuccess: () async {
+        await _notifyClienteViaje(
+          viajeId: viajeId,
+          title: 'Viaje iniciado',
+          body: 'El taxista ha iniciado el viaje',
+          tipo: 'viaje_iniciado',
+        );
+      },
+    );
   }
 
   Future<TaxistaActionResult> finishRideByDriver({required String viajeId}) {
-    return _runDriverRideAction('finish_ride_by_driver', viajeId);
+    return _runDriverRideAction(
+      'finish_ride_by_driver',
+      viajeId,
+      onSuccess: () async {
+        await _notifyClienteViaje(
+          viajeId: viajeId,
+          title: 'Viaje finalizado',
+          body: 'El viaje ha finalizado correctamente',
+          tipo: 'viaje_finalizado',
+        );
+      },
+    );
   }
 
   Future<TaxistaActionResult> _runDriverRideAction(
     String rpcName,
-    String viajeId,
-  ) async {
+    String viajeId, {
+    Future<void> Function()? onSuccess,
+  }) async {
     final raw = await _supabase.rpc(rpcName, params: {'p_viaje_id': viajeId});
 
+    TaxistaActionResult? result;
+
     if (raw is List && raw.isNotEmpty) {
-      return TaxistaActionResult.fromMap(Map<String, dynamic>.from(raw.first));
+      result = TaxistaActionResult.fromMap(
+        Map<String, dynamic>.from(raw.first),
+      );
+    } else if (raw is Map) {
+      result = TaxistaActionResult.fromMap(Map<String, dynamic>.from(raw));
     }
 
-    if (raw is Map) {
-      return TaxistaActionResult.fromMap(Map<String, dynamic>.from(raw));
+    if (result?.success == true && onSuccess != null) {
+      await onSuccess();
     }
 
-    return const TaxistaActionResult(
-      success: false,
-      message: 'No se pudo completar la accion solicitada.',
-    );
+    return result ??
+        const TaxistaActionResult(
+          success: false,
+          message: 'No se pudo completar la accion solicitada.',
+        );
   }
 }
