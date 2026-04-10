@@ -386,11 +386,13 @@ class TaxistaService {
     );
 
     if (raw is Map<String, dynamic>) {
-      return DriverDashboardData.fromMap(raw);
+      return _enrichDriverDashboardData(DriverDashboardData.fromMap(raw));
     }
 
     if (raw is Map) {
-      return DriverDashboardData.fromMap(Map<String, dynamic>.from(raw));
+      return _enrichDriverDashboardData(
+        DriverDashboardData.fromMap(Map<String, dynamic>.from(raw)),
+      );
     }
 
     return const DriverDashboardData(
@@ -399,6 +401,54 @@ class TaxistaService {
       estadoTaxista: 'no disponible',
       ultimosViajes: [],
     );
+  }
+
+  Future<DriverDashboardData> _enrichDriverDashboardData(
+    DriverDashboardData data,
+  ) async {
+    final viajeActivo = data.viajeActivo;
+    final rideId = viajeActivo?['id']?.toString();
+
+    if (viajeActivo == null || rideId == null || rideId.isEmpty) {
+      return data;
+    }
+
+    if (viajeActivo['anotaciones'] != null && viajeActivo['duracion'] != null) {
+      return data;
+    }
+
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      return data;
+    }
+
+    try {
+      final rawDetail = await _supabase.rpc(
+        'get_driver_ride_detail',
+        params: {'p_viaje_id': rideId, 'p_driver_id': user.id},
+      );
+
+      if (rawDetail is List && rawDetail.isNotEmpty) {
+        final detail = Map<String, dynamic>.from(rawDetail.first as Map);
+        final enriched = {
+          ...viajeActivo,
+          'anotaciones': detail['anotaciones'],
+          'duracion': detail['duracion'] ?? viajeActivo['duracion'],
+        };
+
+        return DriverDashboardData(
+          success: data.success,
+          message: data.message,
+          estadoTaxista: data.estadoTaxista,
+          viajeActivo: enriched,
+          ultimosViajes: data.ultimosViajes,
+        );
+      }
+    } catch (_) {
+      // Keep dashboard data usable even if extra enrichment fails.
+    }
+
+    return data;
   }
 
   Future<TaxistaActionResult> setDriverDisponibilidad({

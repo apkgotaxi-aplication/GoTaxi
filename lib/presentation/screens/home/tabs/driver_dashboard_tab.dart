@@ -24,6 +24,23 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
     _loadDashboard();
   }
 
+  String _formatDuration(dynamic rawMinutes) {
+    final minutes = int.tryParse(rawMinutes?.toString() ?? '');
+    if (minutes == null || minutes <= 0) return 'No disponible';
+
+    if (minutes < 60) {
+      return '$minutes min';
+    }
+
+    final hours = minutes ~/ 60;
+    final remainingMinutes = minutes % 60;
+    if (remainingMinutes == 0) {
+      return '$hours h';
+    }
+
+    return '$hours h $remainingMinutes min';
+  }
+
   Future<void> _loadDashboard() async {
     setState(() {
       _loading = true;
@@ -31,7 +48,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
     });
 
     try {
-      final data = await _taxistaService.getDriverDashboardData(limit: 3);
+      final data = await _taxistaService.getDriverDashboardData(limit: 6);
       if (!mounted) return;
       setState(() {
         _dashboardData = data;
@@ -221,6 +238,14 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
     final estadoColor = isOcupado
         ? Colors.orange
         : (isDisponible ? Colors.green : Colors.red);
+    final activeRideId = data.viajeActivo?['id']?.toString();
+    final ultimosViajesSinActivo = data.ultimosViajes
+        .where((ride) {
+          final rideId = ride['id']?.toString();
+          return activeRideId == null || rideId != activeRideId;
+        })
+        .take(3)
+        .toList();
 
     return SafeArea(
       child: RefreshIndicator(
@@ -289,7 +314,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
-            if (data.ultimosViajes.isEmpty)
+            if (ultimosViajesSinActivo.isEmpty)
               const Card(
                 child: Padding(
                   padding: EdgeInsets.all(16),
@@ -297,7 +322,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                 ),
               )
             else
-              ...data.ultimosViajes.map(_buildViajeResumenCard),
+              ...ultimosViajesSinActivo.map(_buildViajeResumenCard),
             const SizedBox(height: 16),
             Text(
               'Accesos rapidos',
@@ -354,6 +379,8 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
     final cliente =
         '${ride['cliente_nombre'] ?? ''} ${ride['cliente_apellidos'] ?? ''}'
             .trim();
+    final anotaciones = ride['anotaciones']?.toString().trim() ?? '';
+    final duracion = _formatDuration(ride['duracion']);
 
     return Card(
       color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
@@ -387,6 +414,12 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
             Text('Origen: ${ride['origen'] ?? '-'}'),
             const SizedBox(height: 4),
             Text('Destino: ${ride['destino'] ?? '-'}'),
+            const SizedBox(height: 4),
+            Text('Duracion del trayecto: $duracion'),
+            const SizedBox(height: 4),
+            Text(
+              'Anotaciones: ${anotaciones.isEmpty ? 'Sin anotaciones' : anotaciones}',
+            ),
             if (estado == 'confirmada') ...[
               const SizedBox(height: 4),
               Text(
