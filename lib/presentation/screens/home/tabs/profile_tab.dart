@@ -5,6 +5,7 @@ import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
 import 'package:gotaxi/presentation/screens/home/faq_screen.dart';
 import 'package:gotaxi/presentation/screens/home/ride_detail_screen.dart';
 import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
+import 'package:gotaxi/data/services/stripe_payment_service.dart';
 import 'package:gotaxi/presentation/fragments/profile/admin_panel_fragment.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 import '../../../../utils/profile/user_personal_data_utils.dart';
@@ -32,6 +33,7 @@ class _ProfileTabState extends State<ProfileTab> {
   String? _error;
   String _userRole = '';
   Map<String, dynamic>? _activeRide;
+  final StripePaymentService _stripePaymentService = StripePaymentService();
 
   @override
   void initState() {
@@ -510,19 +512,124 @@ class _ProfileTabState extends State<ProfileTab> {
                 ],
               ),
             ),
-            const Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.credit_card, size: 64, color: Colors.grey),
-                    SizedBox(height: 16),
-                    Text(
-                      'No tienes métodos de pago guardados',
-                      style: TextStyle(fontSize: 16, color: Colors.grey),
-                    ),
-                  ],
-                ),
+            Expanded(
+              child: FutureBuilder<List<StripePaymentMethodSummary>>(
+                future: _stripePaymentService.listMyPaymentMethods(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          'No se pudieron cargar tus métodos de pago.\n${snapshot.error}',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    );
+                  }
+
+                  final methods = snapshot.data ?? const [];
+
+                  return ListView(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                    children: [
+                      Card(
+                        color: colorScheme.surfaceContainerHighest,
+                        child: const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text(
+                            'No almacenamos datos sensibles de la tarjeta, todo lo gestiona Stripe de forma segura. Aquí puedes añadir metodos de pago.',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (methods.isEmpty)
+                        const Card(
+                          child: Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(
+                                  Icons.credit_card,
+                                  size: 48,
+                                  color: Colors.grey,
+                                ),
+                                SizedBox(height: 12),
+                                Text('No tienes métodos de pago guardados'),
+                              ],
+                            ),
+                          ),
+                        )
+                      else
+                        ...methods.map(
+                          (method) => Card(
+                            child: ListTile(
+                              leading: Icon(
+                                method.isDefault
+                                    ? Icons.verified_user_outlined
+                                    : Icons.credit_card_outlined,
+                              ),
+                              title: Text(method.label),
+                              subtitle: Text(
+                                method.isDefault
+                                    ? 'Método predeterminado'
+                                    : 'Método guardado en Stripe',
+                              ),
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: () async {
+                          try {
+                            final result = await _stripePaymentService
+                                .createPaymentMethodSetupSession();
+
+                            if (!context.mounted) return;
+
+                            if (!result.success || result.checkoutUrl == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(result.message),
+                                  backgroundColor: colorScheme.error,
+                                ),
+                              );
+                              return;
+                            }
+
+                            await _stripePaymentService.openCheckoutUrl(
+                              result.checkoutUrl!,
+                            );
+
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Se ha abierto Stripe para guardar tu método de pago.',
+                                ),
+                              ),
+                            );
+                          } catch (e) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(e.toString()),
+                                backgroundColor: colorScheme.error,
+                              ),
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.add_card_outlined),
+                        label: const Text('Añadir método de pago'),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ],

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
+import 'package:gotaxi/data/services/stripe_payment_service.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 
 class RideDetailScreen extends StatefulWidget {
@@ -20,9 +21,11 @@ class RideDetailScreen extends StatefulWidget {
 
 class _RideDetailScreenState extends State<RideDetailScreen> {
   final RideService _rideService = RideService();
+  final StripePaymentService _stripePaymentService = StripePaymentService();
 
   late Future<Map<String, dynamic>> _detailFuture;
   bool _isCancelling = false;
+  bool _isPaying = false;
 
   @override
   void initState() {
@@ -76,7 +79,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
       return '$hours h';
     }
 
-    return '$hours h ${remainingMinutes} min';
+    return '$hours h $remainingMinutes min';
   }
 
   String _formatActualDuration(Map<String, dynamic> detail) {
@@ -201,6 +204,67 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
     }
   }
 
+  Future<void> _payRide(Map<String, dynamic> detail) async {
+    if (_isPaying) return;
+
+    final state = normalizeRideState(detail['estado']);
+    final isPaid = detail['pagado'] == true;
+
+    if (isPaid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Este viaje ya está pagado.')),
+      );
+      return;
+    }
+
+    if (state != 'confirmada' && state != 'en_curso') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Solo puedes pagar viajes confirmados o en curso.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isPaying = true);
+    try {
+      final result = await _stripePaymentService.createRidePaymentSession(
+        rideId: widget.rideId,
+      );
+
+      if (!mounted) return;
+
+      if (!result.success || result.checkoutUrl == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+        return;
+      }
+
+      await _stripePaymentService.openCheckoutUrl(result.checkoutUrl!);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Se ha abierto el pago seguro de Stripe.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.toString().replaceFirst('StateError: ', '')),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isPaying = false);
+    }
+  }
+
   Widget _buildInfoTile({
     required IconData icon,
     required String label,
@@ -298,6 +362,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
           final estimatedDuration = _formatMinutes(detail['duracion']);
           final actualDuration = _formatActualDuration(detail);
           final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
+          final isPaid = detail['pagado'] == true;
 
           return ListView(
             padding: EdgeInsets.fromLTRB(
@@ -411,6 +476,14 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
+                          icon: isPaid
+                              ? Icons.verified_outlined
+                              : Icons.hourglass_empty_outlined,
+                          label: 'Pago',
+                          value: isPaid ? 'Pagado' : 'Pendiente de pago',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
                           icon: Icons.person_outline,
                           label: 'Cliente',
                           value: clientName,
@@ -442,6 +515,14 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                           icon: Icons.payments_outlined,
                           label: 'Precio',
                           value: _formatPrice(detail['precio']),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: isPaid
+                              ? Icons.verified_outlined
+                              : Icons.hourglass_empty_outlined,
+                          label: 'Pago',
+                          value: isPaid ? 'Pagado' : 'Pendiente de pago',
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
@@ -497,6 +578,25 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                   style: FilledButton.styleFrom(
                     backgroundColor: colorScheme.error,
                     foregroundColor: colorScheme.onError,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ],
+              if (!widget.isDriverView &&
+                  (state == 'confirmada' || state == 'en_curso') &&
+                  !isPaid) ...[
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: _isPaying ? null : () => _payRide(detail),
+                  icon: _isPaying
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.payments_outlined),
+                  label: Text(_isPaying ? 'Procesando...' : 'Pagar viaje'),
+                  style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                 ),

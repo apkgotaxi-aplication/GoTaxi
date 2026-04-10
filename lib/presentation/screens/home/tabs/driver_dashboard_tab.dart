@@ -381,6 +381,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
             .trim();
     final anotaciones = ride['anotaciones']?.toString().trim() ?? '';
     final duracion = _formatDuration(ride['duracion']);
+    final isPaid = ride['pagado'] == true;
 
     return Card(
       color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
@@ -420,6 +421,8 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
             Text(
               'Anotaciones: ${anotaciones.isEmpty ? 'Sin anotaciones' : anotaciones}',
             ),
+            const SizedBox(height: 4),
+            Text('Pago: ${isPaid ? 'Pagado' : 'Pendiente'}'),
             if (estado == 'confirmada') ...[
               const SizedBox(height: 4),
               Text(
