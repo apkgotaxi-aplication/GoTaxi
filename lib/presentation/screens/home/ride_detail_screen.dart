@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:gotaxi/data/services/app_links_service.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
 import 'package:gotaxi/data/services/stripe_payment_service.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
@@ -19,27 +22,232 @@ class RideDetailScreen extends StatefulWidget {
   State<RideDetailScreen> createState() => _RideDetailScreenState();
 }
 
-class _RideDetailScreenState extends State<RideDetailScreen> {
+class _RideDetailScreenState extends State<RideDetailScreen>
+    with WidgetsBindingObserver {
   final RideService _rideService = RideService();
   final StripePaymentService _stripePaymentService = StripePaymentService();
 
   late Future<Map<String, dynamic>> _detailFuture;
   bool _isCancelling = false;
   bool _isPaying = false;
+  bool _waitingStripeReturn = false;
+  bool _checkingPaymentStatus = false;
+  bool _optimisticPaidUntilSync = false;
+  StreamSubscription<Uri>? _deepLinkSubscription;
+  String? _pendingCheckoutSessionId;
 
   @override
   void initState() {
     super.initState();
-    _detailFuture = widget.isDriverView
+    WidgetsBinding.instance.addObserver(this);
+    _detailFuture = _fetchRideDetail();
+    unawaited(_tryAutoSyncPendingPayment());
+    _deepLinkSubscription = AppLinksService.instance.uriStream.listen(
+      _handleStripeDeepLink,
+    );
+  }
+
+  @override
+  void dispose() {
+    _deepLinkSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  void _handleStripeDeepLink(Uri uri) {
+    if (uri.scheme != 'gotaxi' || uri.host != 'stripe') return;
+
+    final isSuccess = uri.path.contains('success');
+    final isCancel = uri.path.contains('cancel');
+    final sessionId = uri.queryParameters['session_id'];
+
+    if (!isSuccess && !isCancel) return;
+
+    if (isCancel) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pago cancelado en Stripe.')),
+      );
+      _optimisticPaidUntilSync = false;
+      _waitingStripeReturn = false;
+      _pendingCheckoutSessionId = null;
+      return;
+    }
+
+    _optimisticPaidUntilSync = true;
+    _pendingCheckoutSessionId = sessionId;
+    _waitingStripeReturn = true;
+    unawaited(_markRideAsPaidLocally());
+    unawaited(_checkPaymentAfterStripeReturn());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _waitingStripeReturn) {
+      unawaited(_checkPaymentAfterStripeReturn());
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      unawaited(
+        _tryAutoSyncPendingPayment(
+          checkoutSessionId: _pendingCheckoutSessionId,
+        ),
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>> _fetchRideDetail() {
+    return widget.isDriverView
         ? fetchCurrentUserDriverRideDetail(rideId: widget.rideId)
         : fetchCurrentUserRideDetail(rideId: widget.rideId);
   }
 
+  bool _isRidePaidFromData(Map<String, dynamic> detail) {
+    if (detail['pagado'] == true) return true;
+    final stripeStatus = detail['stripe_payment_status']
+        ?.toString()
+        .toLowerCase()
+        .trim();
+    return stripeStatus == 'succeeded' ||
+        stripeStatus == 'successed' ||
+        stripeStatus == 'paid';
+  }
+
+  bool _isRidePaid(Map<String, dynamic> detail) {
+    return _optimisticPaidUntilSync || _isRidePaidFromData(detail);
+  }
+
+  Map<String, dynamic> _withOptimisticPaid(Map<String, dynamic> detail) {
+    if (!_optimisticPaidUntilSync || _isRidePaidFromData(detail)) {
+      return detail;
+    }
+
+    return Map<String, dynamic>.from(detail)
+      ..['pagado'] = true
+      ..['stripe_payment_status'] = 'succeeded';
+  }
+
+  Future<void> _checkPaymentAfterStripeReturn() async {
+    if (_checkingPaymentStatus) return;
+    _checkingPaymentStatus = true;
+
+    try {
+      for (var attempt = 0; attempt < 10; attempt++) {
+        if (!mounted) return;
+
+        try {
+          await _stripePaymentService.syncRidePaymentStatus(
+            rideId: widget.rideId,
+            checkoutSessionId: _pendingCheckoutSessionId,
+          );
+        } catch (_) {
+          // Si la sync falla, seguimos reintentando con la BD.
+        }
+
+        final latest = await _fetchRideDetail();
+        if (!mounted) return;
+
+        final confirmedPaid = _isRidePaidFromData(latest);
+        final displayDetail = _withOptimisticPaid(latest);
+
+        setState(() {
+          _detailFuture = Future<Map<String, dynamic>>.value(displayDetail);
+        });
+
+        if (confirmedPaid) {
+          _optimisticPaidUntilSync = false;
+          _waitingStripeReturn = false;
+          _pendingCheckoutSessionId = null;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Pago confirmado correctamente.')),
+          );
+          return;
+        }
+
+        if (attempt < 9) {
+          await Future<void>.delayed(const Duration(seconds: 2));
+        }
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Aun no se refleja el pago. Se actualizara automaticamente en breve.',
+          ),
+        ),
+      );
+    } catch (_) {
+      // Ignora errores transitorios de red al volver desde navegador.
+    } finally {
+      _checkingPaymentStatus = false;
+    }
+  }
+
+  Future<void> _tryAutoSyncPendingPayment({String? checkoutSessionId}) async {
+    if (widget.isDriverView || _checkingPaymentStatus) return;
+
+    try {
+      final current = await _fetchRideDetail();
+      if (!mounted) return;
+
+      final rideState = normalizeRideState(current['estado']);
+      final isPendingInProgress =
+          rideState == 'en_curso' && !_isRidePaidFromData(current);
+
+      if (!isPendingInProgress) {
+        setState(() {
+          _detailFuture = Future<Map<String, dynamic>>.value(current);
+        });
+        return;
+      }
+
+      try {
+        await _stripePaymentService.syncRidePaymentStatus(
+          rideId: widget.rideId,
+          checkoutSessionId: checkoutSessionId,
+        );
+      } catch (_) {
+        // Ignora errores transitorios y deja la UI con el estado más reciente disponible.
+      }
+
+      final refreshed = await _fetchRideDetail();
+      if (!mounted) return;
+
+      if (_isRidePaidFromData(refreshed)) {
+        _optimisticPaidUntilSync = false;
+      }
+
+      setState(() {
+        _detailFuture = Future<Map<String, dynamic>>.value(
+          _withOptimisticPaid(refreshed),
+        );
+      });
+    } catch (_) {
+      // No interrumpe la pantalla si la sync de fondo falla.
+    }
+  }
+
+  Future<void> _markRideAsPaidLocally() async {
+    try {
+      final current = await _detailFuture;
+      if (!mounted) return;
+
+      _optimisticPaidUntilSync = true;
+      final optimistic = _withOptimisticPaid(current);
+
+      setState(() {
+        _detailFuture = Future<Map<String, dynamic>>.value(optimistic);
+      });
+    } catch (_) {
+      // Si el detalle actual no está disponible aún, la sync remota actualizará la UI.
+    }
+  }
+
   Future<void> _reload() async {
     setState(() {
-      _detailFuture = widget.isDriverView
-          ? fetchCurrentUserDriverRideDetail(rideId: widget.rideId)
-          : fetchCurrentUserRideDetail(rideId: widget.rideId);
+      _detailFuture = _fetchRideDetail();
     });
     await _detailFuture;
   }
@@ -208,7 +416,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
     if (_isPaying) return;
 
     final state = normalizeRideState(detail['estado']);
-    final isPaid = detail['pagado'] == true;
+    final isPaid = _isRidePaid(detail);
 
     if (isPaid) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -217,11 +425,9 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
       return;
     }
 
-    if (state != 'confirmada' && state != 'en_curso') {
+    if (state != 'en_curso') {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Solo puedes pagar viajes confirmados o en curso.'),
-        ),
+        const SnackBar(content: Text('Solo puedes pagar viajes en curso.')),
       );
       return;
     }
@@ -245,11 +451,15 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
       }
 
       await _stripePaymentService.openCheckoutUrl(result.checkoutUrl!);
+      _pendingCheckoutSessionId = result.checkoutSessionId;
+      _waitingStripeReturn = true;
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Se ha abierto el pago seguro de Stripe.'),
+          content: Text(
+            'Se abrio Stripe. Al volver, comprobaremos el estado del pago.',
+          ),
         ),
       );
     } catch (e) {
@@ -269,6 +479,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
     required IconData icon,
     required String label,
     required String value,
+    Color? iconColor,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     return Container(
@@ -280,7 +491,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 18, color: colorScheme.primary),
+          Icon(icon, size: 18, color: iconColor ?? colorScheme.primary),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -362,7 +573,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
           final estimatedDuration = _formatMinutes(detail['duracion']);
           final actualDuration = _formatActualDuration(detail);
           final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
-          final isPaid = detail['pagado'] == true;
+          final isPaid = _isRidePaid(detail);
 
           return ListView(
             padding: EdgeInsets.fromLTRB(
@@ -479,6 +690,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                           icon: isPaid
                               ? Icons.verified_outlined
                               : Icons.hourglass_empty_outlined,
+                          iconColor: isPaid ? Colors.green : null,
                           label: 'Pago',
                           value: isPaid ? 'Pagado' : 'Pendiente de pago',
                         ),
@@ -521,6 +733,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                           icon: isPaid
                               ? Icons.verified_outlined
                               : Icons.hourglass_empty_outlined,
+                          iconColor: isPaid ? Colors.green : null,
                           label: 'Pago',
                           value: isPaid ? 'Pagado' : 'Pendiente de pago',
                         ),
@@ -582,9 +795,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                   ),
                 ),
               ],
-              if (!widget.isDriverView &&
-                  (state == 'confirmada' || state == 'en_curso') &&
-                  !isPaid) ...[
+              if (!widget.isDriverView && state == 'en_curso' && !isPaid) ...[
                 const SizedBox(height: 16),
                 FilledButton.icon(
                   onPressed: _isPaying ? null : () => _payRide(detail),

@@ -3,6 +3,7 @@ import Stripe from 'npm:stripe@16.12.0';
 
 const STRIPE_SECRET_KEY = Deno.env.get('STRIPE_SECRET_KEY');
 const STRIPE_WEBHOOK_SECRET = Deno.env.get('STRIPE_WEBHOOK_SECRET');
+const APP_DEEPLINK_BASE = (Deno.env.get('APP_DEEPLINK_BASE') ?? 'gotaxi://stripe').replace(/\/$/, '');
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
 const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -30,6 +31,11 @@ function jsonResponse(body: unknown, init?: ResponseInit) {
       ...(init?.headers ?? {}),
     },
   });
+}
+
+function buildCheckoutReturnUrl(path: 'success' | 'cancel', params: Record<string, string>) {
+  const query = new URLSearchParams(params);
+  return `${APP_DEEPLINK_BASE}/${path}?${query.toString()}`;
 }
 
 async function getAuthenticatedUser(req: Request) {
@@ -120,8 +126,14 @@ async function createSetupSession(userId: string, email?: string | null) {
       user_id: userId,
       purpose: 'save_payment_method',
     },
-    success_url: 'https://example.com/stripe/success',
-    cancel_url: 'https://example.com/stripe/cancel',
+    success_url: buildCheckoutReturnUrl('success', {
+      flow: 'setup_method',
+      session_id: '{CHECKOUT_SESSION_ID}',
+    }),
+    cancel_url: buildCheckoutReturnUrl('cancel', {
+      flow: 'setup_method',
+      session_id: '{CHECKOUT_SESSION_ID}',
+    }),
   });
 
   return { checkout_url: session.url, checkout_session_id: session.id };
@@ -192,8 +204,16 @@ async function createRidePaymentSession(userId: string, rideId: string, email?: 
         ride_id: rideId,
       },
     },
-    success_url: 'https://example.com/stripe/success',
-    cancel_url: 'https://example.com/stripe/cancel',
+    success_url: buildCheckoutReturnUrl('success', {
+      flow: 'ride_payment',
+      ride_id: rideId,
+      session_id: '{CHECKOUT_SESSION_ID}',
+    }),
+    cancel_url: buildCheckoutReturnUrl('cancel', {
+      flow: 'ride_payment',
+      ride_id: rideId,
+      session_id: '{CHECKOUT_SESSION_ID}',
+    }),
   });
 
   return { checkout_url: session.url, checkout_session_id: session.id };
@@ -254,17 +274,6 @@ async function markRidePaid(rideId: string, paymentIntentId: string, paymentStat
     throw new Error('Viaje no encontrado');
   }
 
-  if (ride.estado !== 'en_curso') {
-    await supabase
-      .from('viajes')
-      .update({
-        stripe_payment_intent_id: paymentIntentId,
-        stripe_payment_status: paymentStatus,
-      })
-      .eq('id', rideId);
-    return;
-  }
-
   await supabase.rpc('upsert_ride_payment_state', {
     p_viaje_id: rideId,
     p_stripe_payment_intent_id: paymentIntentId,
@@ -272,6 +281,165 @@ async function markRidePaid(rideId: string, paymentIntentId: string, paymentStat
     p_pagado: true,
     p_paid_at: new Date().toISOString(),
   });
+}
+
+async function syncRidePaymentFromStripe(userId: string, rideId: string) {
+  if (!stripe) {
+    throw new Error('Stripe no está configurado');
+  }
+
+  const { data: ride, error } = await supabase
+    .from('viajes')
+    .select('id, user_id, stripe_payment_intent_id, pagado, stripe_payment_status, precio')
+    .eq('id', rideId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!ride) {
+    throw new Error('Viaje no encontrado');
+  }
+
+  if (ride.user_id !== userId) {
+    throw new Error('No tienes permiso para consultar este viaje');
+  }
+
+  const paymentIntentId = ride.stripe_payment_intent_id?.toString().trim();
+  if (paymentIntentId) {
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    const paymentStatus = paymentIntent.status;
+
+    const shouldMarkPaid = paymentStatus === 'succeeded' || paymentStatus === 'processing';
+
+    if (shouldMarkPaid && ride.pagado !== true) {
+      await markRidePaid(rideId, paymentIntent.id, paymentStatus);
+      return { synced: true, paid: true, paymentStatus };
+    }
+
+    if (ride.stripe_payment_status !== paymentStatus) {
+      await supabase
+        .from('viajes')
+        .update({
+          stripe_payment_status: paymentStatus,
+        })
+        .eq('id', rideId);
+    }
+
+    return { synced: true, paid: ride.pagado === true || shouldMarkPaid, paymentStatus };
+  }
+
+  const { data: cliente, error: customerError } = await supabase
+    .from('clientes')
+    .select('stripe_customer_id')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (customerError) {
+    throw customerError;
+  }
+
+  const customerId = cliente?.stripe_customer_id?.toString().trim();
+  if (!customerId) {
+    return { synced: false, paid: ride.pagado === true };
+  }
+
+  const paymentIntents = await stripe.paymentIntents.list({
+    customer: customerId,
+    limit: 10,
+  });
+
+  const matchingIntent = paymentIntents.data.find((intent) => {
+    const intentRideId = intent.metadata?.ride_id ?? '';
+    const intentUserId = intent.metadata?.user_id ?? '';
+    return (
+      intentRideId === rideId &&
+      intentUserId === userId &&
+      (intent.status === 'succeeded' || intent.status === 'processing')
+    );
+  }) ?? paymentIntents.data.find((intent) => {
+    const sameAmount = intent.amount === Math.max(0, Math.round(Number(ride.precio ?? 0) * 100));
+    return sameAmount && (intent.status === 'succeeded' || intent.status === 'processing');
+  });
+
+  if (!matchingIntent) {
+    return { synced: false, paid: ride.pagado === true };
+  }
+
+  const paymentStatus = matchingIntent.status;
+
+  const shouldMarkPaid = paymentStatus === 'succeeded' || paymentStatus === 'processing';
+
+  if (shouldMarkPaid && ride.pagado !== true) {
+    await markRidePaid(rideId, matchingIntent.id, paymentStatus);
+    return { synced: true, paid: true, paymentStatus };
+  }
+
+  if (ride.stripe_payment_status !== paymentStatus) {
+    await supabase
+      .from('viajes')
+      .update({
+        stripe_payment_status: paymentStatus,
+      })
+      .eq('id', rideId);
+  }
+
+  return { synced: true, paid: ride.pagado === true || shouldMarkPaid, paymentStatus };
+}
+
+async function syncRidePaymentFromCheckoutSession(
+  userId: string,
+  rideId: string,
+  checkoutSessionId: string,
+) {
+  if (!stripe) {
+    throw new Error('Stripe no está configurado');
+  }
+
+  const session = await stripe.checkout.sessions.retrieve(checkoutSessionId, {
+    expand: ['payment_intent'],
+  });
+
+  const sessionRideId = session.metadata?.ride_id ?? '';
+  const sessionUserId = session.metadata?.user_id ?? '';
+
+  if (sessionUserId && sessionUserId !== userId) {
+    throw new Error('No tienes permiso para consultar esta sesión');
+  }
+
+  if (sessionRideId && sessionRideId !== rideId) {
+    throw new Error('La sesión no corresponde a este viaje');
+  }
+
+  const paymentIntentId = typeof session.payment_intent === 'string'
+    ? session.payment_intent
+    : session.payment_intent?.id;
+
+  const paymentStatus = session.payment_status ?? '';
+
+  if (paymentStatus === 'paid' && paymentIntentId) {
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    await markRidePaid(rideId, paymentIntent.id, paymentIntent.status);
+    return { synced: true, paid: true, paymentStatus: paymentIntent.status };
+  }
+
+  if (paymentIntentId) {
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    if (paymentIntent.status === 'succeeded' || paymentIntent.status === 'processing') {
+      await markRidePaid(rideId, paymentIntent.id, paymentIntent.status);
+      return { synced: true, paid: true, paymentStatus: paymentIntent.status };
+    }
+
+    await supabase
+      .from('viajes')
+      .update({ stripe_payment_status: paymentIntent.status })
+      .eq('id', rideId);
+
+    return { synced: true, paid: false, paymentStatus: paymentIntent.status };
+  }
+
+  return { synced: true, paid: false, paymentStatus };
 }
 
 Deno.serve(async (req) => {
@@ -379,6 +547,23 @@ Deno.serve(async (req) => {
       }
 
       const result = await createRidePaymentSession(user.id, rideId, user.email ?? null);
+      return jsonResponse({ success: true, ...result });
+    }
+
+    if (action === 'sync_ride_payment') {
+      const rideId = (payload.ride_id ?? '').toString();
+      if (!rideId) {
+        return jsonResponse({ success: false, message: 'ride_id es requerido' }, { status: 400 });
+      }
+
+      const checkoutSessionId = (payload.checkout_session_id ?? '').toString().trim();
+
+      if (checkoutSessionId) {
+        const result = await syncRidePaymentFromCheckoutSession(user.id, rideId, checkoutSessionId);
+        return jsonResponse({ success: true, ...result });
+      }
+
+      const result = await syncRidePaymentFromStripe(user.id, rideId);
       return jsonResponse({ success: true, ...result });
     }
 

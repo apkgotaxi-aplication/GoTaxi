@@ -41,6 +41,21 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
     return '$hours h $remainingMinutes min';
   }
 
+  bool _isRidePaid(Map<String, dynamic> ride) {
+    if (ride['pagado'] == true) return true;
+    final stripeStatus = ride['stripe_payment_status']
+        ?.toString()
+        .toLowerCase()
+        .trim();
+    return stripeStatus == 'succeeded' ||
+        stripeStatus == 'successed' ||
+        stripeStatus == 'paid';
+  }
+
+  String _buildPaymentLabel(Map<String, dynamic> ride) {
+    return _isRidePaid(ride) ? 'Pagado' : 'Pendiente';
+  }
+
   Future<void> _loadDashboard() async {
     setState(() {
       _loading = true;
@@ -355,16 +370,6 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                   icon: const Icon(Icons.history),
                   label: const Text('Historial'),
                 ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    _showMessage(
-                      'Modulo de ganancias disponible en la siguiente iteracion.',
-                      isError: false,
-                    );
-                  },
-                  icon: const Icon(Icons.payments_outlined),
-                  label: const Text('Ganancias'),
-                ),
               ],
             ),
           ],
@@ -381,7 +386,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
             .trim();
     final anotaciones = ride['anotaciones']?.toString().trim() ?? '';
     final duracion = _formatDuration(ride['duracion']);
-    final isPaid = ride['pagado'] == true;
+    final isPaid = _isRidePaid(ride);
 
     return Card(
       color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
@@ -422,7 +427,19 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
               'Anotaciones: ${anotaciones.isEmpty ? 'Sin anotaciones' : anotaciones}',
             ),
             const SizedBox(height: 4),
-            Text('Pago: ${isPaid ? 'Pagado' : 'Pendiente'}'),
+            Row(
+              children: [
+                Icon(
+                  isPaid
+                      ? Icons.verified_outlined
+                      : Icons.hourglass_empty_outlined,
+                  size: 18,
+                  color: isPaid ? Colors.green : null,
+                ),
+                const SizedBox(width: 6),
+                Text('Pago: ${_buildPaymentLabel(ride)}'),
+              ],
+            ),
             if (estado == 'confirmada') ...[
               const SizedBox(height: 4),
               Text(
@@ -490,12 +507,16 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
     final estado = ride['estado']?.toString() ?? 'sin estado';
     final origen = ride['origen']?.toString() ?? '-';
     final destino = ride['destino']?.toString() ?? '-';
+    final isPaid = _isRidePaid(ride);
 
     return Card(
       child: ListTile(
-        leading: const Icon(Icons.receipt_long),
+        leading: Icon(
+          isPaid ? Icons.receipt_long : Icons.receipt_long_outlined,
+          color: isPaid ? Colors.green : null,
+        ),
         title: Text('$origen -> $destino'),
-        subtitle: Text('Estado: $estado'),
+        subtitle: Text('Estado: $estado · Pago: ${_buildPaymentLabel(ride)}'),
       ),
     );
   }

@@ -101,6 +101,29 @@ class StripePaymentService {
     return _requestCheckoutSession({'action': 'pay_ride', 'ride_id': rideId});
   }
 
+  Future<bool> syncRidePaymentStatus({
+    required String rideId,
+    String? checkoutSessionId,
+  }) async {
+    final session = await _ensureFreshSession();
+    if (session == null) {
+      throw StateError('Debes iniciar sesion para continuar.');
+    }
+
+    final response = await _invokeStripeFunction({
+      'action': 'sync_ride_payment',
+      'ride_id': rideId,
+      if (checkoutSessionId != null && checkoutSessionId.isNotEmpty)
+        'checkout_session_id': checkoutSessionId,
+    }, accessToken: session.accessToken);
+
+    return response['paid'] == true ||
+        response['synced'] == true &&
+            (response['paymentStatus'] == 'succeeded' ||
+                response['paymentStatus'] == 'successed' ||
+                response['paymentStatus'] == 'paid');
+  }
+
   Future<StripeCheckoutResult> _requestCheckoutSession(
     Map<String, dynamic> body,
   ) async {
