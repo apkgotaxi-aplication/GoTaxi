@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gotaxi/data/services/notification_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:gotaxi/presentation/screens/home/about_us_screen.dart';
 import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
@@ -188,6 +189,7 @@ class _ProfileTabState extends State<ProfileTab> {
     );
 
     if (confirm == true) {
+      await NotificationService().logout();
       await _supabase.auth.signOut();
       if (mounted) {
         Navigator.of(context).pushAndRemoveUntil(
