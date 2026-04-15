@@ -7,6 +7,7 @@ class RatingConstants {
     RatingMotive.imprudente,
     RatingMotive.sucio,
     RatingMotive.ruta_incorrecta,
+    RatingMotive.otra,
   ];
 
   // Display strings for motives
@@ -14,6 +15,7 @@ class RatingConstants {
     RatingMotive.imprudente: 'Conductor imprudente',
     RatingMotive.sucio: 'Vehículo sucio',
     RatingMotive.ruta_incorrecta: 'Ruta incorrecta',
+    RatingMotive.otra: 'Otra',
   };
 
   // Icons/colors for rating types

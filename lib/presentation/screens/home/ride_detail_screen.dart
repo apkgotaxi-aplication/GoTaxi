@@ -497,7 +497,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   }
 
   /// Show the main rating bottom sheet (green/red thumbs)
-  void _showRatingBottomSheet() {
+  void _showRatingBottomSheet(Map<String, dynamic> detail) {
     showModalBottomSheet<void>(
       context: context,
       builder: (BuildContext context) {
@@ -518,7 +518,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   InkWell(
                     onTap: () {
                       Navigator.of(context).pop();
-                      _showPositiveRatingDialog();
+                      _showPositiveRatingDialog(detail);
                     },
                     child: Column(
                       children: [
@@ -546,7 +546,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   InkWell(
                     onTap: () {
                       Navigator.of(context).pop();
-                      _showNegativeRatingDialog();
+                      _showNegativeRatingDialog(detail);
                     },
                     child: Column(
                       children: [
@@ -581,7 +581,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   }
 
   /// Show dialog for positive rating (with optional comment)
-  void _showPositiveRatingDialog() {
+  void _showPositiveRatingDialog(Map<String, dynamic> detail) {
     final controllerCommentario = TextEditingController();
 
     showDialog<void>(
@@ -615,6 +615,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
               onPressed: () {
                 Navigator.of(context).pop();
                 _submitRating(
+                  detail: detail,
                   tipo: RatingType.positiva,
                   comentario: controllerCommentario.text.trim().isEmpty
                       ? null
@@ -630,7 +631,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   }
 
   /// Show dialog for negative rating (with mandatory motive selection)
-  void _showNegativeRatingDialog() {
+  void _showNegativeRatingDialog(Map<String, dynamic> detail) {
     RatingMotive? selectedMotive;
     final controllerCommentario = TextEditingController();
 
@@ -664,13 +665,20 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                     },
                   ),
                   const SizedBox(height: 16),
-                  const Text('Cuéntanos más (opcional):'),
+                  Text(
+                    selectedMotive == RatingMotive.otra
+                        ? 'Cuéntanos qué pasó (obligatorio):'
+                        : 'Cuéntanos más (opcional):',
+                  ),
                   const SizedBox(height: 8),
                   TextField(
                     controller: controllerCommentario,
                     maxLines: 3,
+                    onChanged: (_) => setDialogState(() {}),
                     decoration: InputDecoration(
-                      hintText: 'Tu comentario aquí...',
+                      hintText: selectedMotive == RatingMotive.otra
+                          ? 'Escribe el motivo...'
+                          : 'Tu comentario aquí...',
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(8),
                       ),
@@ -684,11 +692,15 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   child: const Text('Cancelar'),
                 ),
                 FilledButton(
-                  onPressed: selectedMotive == null
+                  onPressed:
+                      selectedMotive == null ||
+                          (selectedMotive == RatingMotive.otra &&
+                              controllerCommentario.text.trim().isEmpty)
                       ? null
                       : () {
                           Navigator.of(context).pop();
                           _submitRating(
+                            detail: detail,
                             tipo: RatingType.negativa,
                             motivo: selectedMotive,
                             comentario:
@@ -709,14 +721,14 @@ class _RideDetailScreenState extends State<RideDetailScreen>
 
   /// Submit the rating to Supabase
   Future<void> _submitRating({
+    required Map<String, dynamic> detail,
     required RatingType tipo,
     RatingMotive? motivo,
     String? comentario,
   }) async {
     if (_ratingInProgress) return;
 
-    final detail = widget.initialRide;
-    final taxistaId = detail['taxista_id'] as String?;
+    final taxistaId = _resolveTaxistaId(detail);
 
     if (taxistaId == null) {
       if (mounted) {
@@ -775,6 +787,40 @@ class _RideDetailScreenState extends State<RideDetailScreen>
         );
       }
     }
+  }
+
+  String? _resolveTaxistaId(Map<String, dynamic> detail) {
+    final directKeys = [
+      detail['taxista_id'],
+      detail['driver_id'],
+      detail['taxistaId'],
+      detail['driverId'],
+    ];
+
+    for (final value in directKeys) {
+      final id = value?.toString().trim();
+      if (id != null && id.isNotEmpty) {
+        return id;
+      }
+    }
+
+    final nestedDriver = detail['driver'];
+    if (nestedDriver is Map) {
+      final nestedId = nestedDriver['id']?.toString().trim();
+      if (nestedId != null && nestedId.isNotEmpty) {
+        return nestedId;
+      }
+    }
+
+    final nestedTaxista = detail['taxista'];
+    if (nestedTaxista is Map) {
+      final nestedId = nestedTaxista['id']?.toString().trim();
+      if (nestedId != null && nestedId.isNotEmpty) {
+        return nestedId;
+      }
+    }
+
+    return null;
   }
 
   Widget _buildInfoTile({
@@ -1073,13 +1119,14 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   ),
                 ),
               ],
-              // Rating button - appears only when ride is finished and not yet rated
               if (!widget.isDriverView &&
                   normalizeRideState(detail['estado']) == 'finalizada' &&
                   !_isRated) ...[
                 const SizedBox(height: 16),
                 FilledButton.icon(
-                  onPressed: _ratingInProgress ? null : _showRatingBottomSheet,
+                  onPressed: _ratingInProgress
+                      ? null
+                      : () => _showRatingBottomSheet(detail),
                   icon: _ratingInProgress
                       ? const SizedBox(
                           height: 18,
@@ -1097,7 +1144,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   ),
                 ),
               ],
-              // Already rated badge
               if (!widget.isDriverView &&
                   normalizeRideState(detail['estado']) == 'finalizada' &&
                   _isRated) ...[

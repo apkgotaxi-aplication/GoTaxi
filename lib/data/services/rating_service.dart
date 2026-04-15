@@ -25,6 +25,15 @@ class RatingService {
         );
       }
 
+      if (tipo == RatingType.negativa && motivo == RatingMotive.otra) {
+        if (comentario == null || comentario.trim().isEmpty) {
+          return const SubmitRatingResult(
+            success: false,
+            message: 'Debes escribir el motivo cuando selecciones "Otra"',
+          );
+        }
+      }
+
       // Call the RPC function from Supabase
       final response = await _supabase.rpc(
         'submit_ride_rating',

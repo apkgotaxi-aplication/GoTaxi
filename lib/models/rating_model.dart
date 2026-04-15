@@ -8,6 +8,7 @@ enum RatingMotive {
   imprudente, // Conductor imprudente
   sucio, // Vehículo sucio
   ruta_incorrecta, // Ruta incorrecta
+  otra, // Otro motivo
 }
 
 /// Extensión para convertir enum a string y viceversa
@@ -38,6 +39,8 @@ extension RatingMotiveExtension on RatingMotive {
         return 'Vehículo sucio';
       case RatingMotive.ruta_incorrecta:
         return 'Ruta incorrecta';
+      case RatingMotive.otra:
+        return 'Otra';
     }
   }
 
