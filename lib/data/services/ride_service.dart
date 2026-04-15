@@ -1,5 +1,3 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class RideAssignmentResult {
@@ -54,9 +52,6 @@ class RideService {
 
   final SupabaseClient _supabase;
 
-  static const String _functionsUrl =
-      'https://vkewprpynejnmobgpbiu.supabase.co/functions/v1/send-notification';
-
   Future<void> _sendPushNotification({
     required String userId,
     required String title,
@@ -64,15 +59,9 @@ class RideService {
     Map<String, dynamic>? data,
   }) async {
     try {
-      await http.post(
-        Uri.parse(_functionsUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'user_id': userId,
-          'title': title,
-          'body': body,
-          'data': data,
-        }),
+      await _supabase.functions.invoke(
+        'send-notification',
+        body: {'user_id': userId, 'title': title, 'body': body, 'data': data},
       );
     } catch (_) {}
   }
@@ -87,18 +76,46 @@ class RideService {
     if (taxistaId != null && viajeId != null) {
       await _sendPushNotification(
         userId: taxistaId,
-        title: 'Nuevo viaje asignado',
-        body: 'Se te ha asignado un viaje de $origen a $destino',
-        data: {'viaje_id': viajeId, 'tipo': 'nuevo_viaje'},
+        title: 'Nuevo taxi solicitado',
+        body: 'Cliente esperando viaje de $origen a $destino',
+        data: {'viaje_id': viajeId, 'tipo': 'solicitud_taxi'},
       );
-    }
 
-    if (viajeId != null) {
       await _sendPushNotification(
         userId: clienteId,
-        title: 'Viaje solicitado',
-        body: 'Hemos encontrado un taxista para tu viaje',
+        title: 'Taxista asignado',
+        body: 'Ya tienes un taxista asignado para tu viaje',
         data: {'viaje_id': viajeId, 'tipo': 'taxista_asignado'},
+      );
+    }
+  }
+
+  Future<void> _notifyRideCancellation({
+    required String clienteId,
+    required String? taxistaId,
+    required String viajeId,
+    required bool cancelledByCliente,
+  }) async {
+    final clienteBody = cancelledByCliente
+        ? 'Tu viaje ha sido cancelado correctamente'
+        : 'El taxista ha cancelado tu viaje';
+    final taxistaBody = cancelledByCliente
+        ? 'El cliente ha cancelado el viaje'
+        : 'Has cancelado el viaje correctamente';
+
+    await _sendPushNotification(
+      userId: clienteId,
+      title: 'Viaje cancelado',
+      body: clienteBody,
+      data: {'viaje_id': viajeId, 'tipo': 'viaje_cancelado'},
+    );
+
+    if (taxistaId != null) {
+      await _sendPushNotification(
+        userId: taxistaId,
+        title: 'Viaje cancelado',
+        body: taxistaBody,
+        data: {'viaje_id': viajeId, 'tipo': 'viaje_cancelado'},
       );
     }
   }
@@ -109,19 +126,45 @@ class RideService {
       throw StateError('Debes iniciar sesion para cancelar un viaje.');
     }
 
+    final viaje = await _supabase
+        .from('viajes')
+        .select('driver_id')
+        .eq('id', viajeId)
+        .maybeSingle();
+
     final raw = await _supabase.rpc(
       'cancel_ride',
       params: {'p_viaje_id': viajeId, 'p_cliente_id': user.id},
     );
 
     if (raw is List && raw.isNotEmpty) {
-      return RideCancellationResult.fromMap(
+      final result = RideCancellationResult.fromMap(
         Map<String, dynamic>.from(raw.first as Map),
       );
+      if (result.success) {
+        await _notifyRideCancellation(
+          clienteId: user.id,
+          taxistaId: viaje?['driver_id'] as String?,
+          viajeId: viajeId,
+          cancelledByCliente: true,
+        );
+      }
+      return result;
     }
 
     if (raw is Map) {
-      return RideCancellationResult.fromMap(Map<String, dynamic>.from(raw));
+      final result = RideCancellationResult.fromMap(
+        Map<String, dynamic>.from(raw),
+      );
+      if (result.success) {
+        await _notifyRideCancellation(
+          clienteId: user.id,
+          taxistaId: viaje?['driver_id'] as String?,
+          viajeId: viajeId,
+          cancelledByCliente: true,
+        );
+      }
+      return result;
     }
 
     return const RideCancellationResult(

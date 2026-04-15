@@ -1,5 +1,3 @@
-import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class TaxistaActionResult {
@@ -64,9 +62,6 @@ class DriverDashboardData {
 class TaxistaService {
   final SupabaseClient _supabase = Supabase.instance.client;
 
-  static const String _functionsUrl =
-      'https://vkewprpynejnmobgpbiu.supabase.co/functions/v1/send-notification';
-
   Future<void> _sendPushNotification({
     required String userId,
     required String title,
@@ -74,15 +69,9 @@ class TaxistaService {
     Map<String, dynamic>? data,
   }) async {
     try {
-      await http.post(
-        Uri.parse(_functionsUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'user_id': userId,
-          'title': title,
-          'body': body,
-          'data': data,
-        }),
+      await _supabase.functions.invoke(
+        'send-notification',
+        body: {'user_id': userId, 'title': title, 'body': body, 'data': data},
       );
     } catch (_) {}
   }
@@ -108,6 +97,25 @@ class TaxistaService {
           data: {'viaje_id': viajeId, 'tipo': tipo},
         );
       }
+    } catch (_) {}
+  }
+
+  Future<void> _notifyDriverViaje({
+    required String title,
+    required String body,
+    required String viajeId,
+    String? tipo,
+  }) async {
+    final driverId = _supabase.auth.currentUser?.id;
+    if (driverId == null) return;
+
+    try {
+      await _sendPushNotification(
+        userId: driverId,
+        title: title,
+        body: body,
+        data: {'viaje_id': viajeId, 'tipo': tipo},
+      );
     } catch (_) {}
   }
 
@@ -493,12 +501,20 @@ class TaxistaService {
       'cancel_ride_by_driver',
       viajeId,
       onSuccess: () async {
-        await _notifyClienteViaje(
-          viajeId: viajeId,
-          title: 'Viaje cancelado',
-          body: 'El taxista ha cancelado el viaje',
-          tipo: 'viaje_cancelado',
-        );
+        await Future.wait([
+          _notifyClienteViaje(
+            viajeId: viajeId,
+            title: 'Viaje cancelado',
+            body: 'El taxista ha cancelado el viaje',
+            tipo: 'viaje_cancelado',
+          ),
+          _notifyDriverViaje(
+            viajeId: viajeId,
+            title: 'Viaje cancelado',
+            body: 'Has cancelado el viaje correctamente',
+            tipo: 'viaje_cancelado',
+          ),
+        ]);
       },
     );
   }

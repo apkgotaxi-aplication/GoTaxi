@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../screens/home/crear_taxista_screen.dart';
 import '../../screens/home/gestionar_tarifas_screen.dart';
 import '../../screens/home/gestionar_taxistas_screen.dart';
+import '../../screens/home/push_debug_screen.dart';
 
 class AdminPanelFragment extends StatelessWidget {
   const AdminPanelFragment({super.key});
@@ -72,6 +73,21 @@ class AdminPanelFragment extends StatelessWidget {
                     MaterialPageRoute(
                       builder: (_) => const GestionarTarifasScreen(),
                     ),
+                  );
+                },
+              ),
+              Divider(
+                height: 1,
+                color: colorScheme.outline.withValues(alpha: 0.2),
+              ),
+              _AdminSectionItem(
+                icon: Icons.notifications_active_outlined,
+                color: colorScheme.secondary,
+                title: 'Push debug',
+                subtitle: 'Ver subscription ID y lanzar una push de prueba.',
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const PushDebugScreen()),
                   );
                 },
               ),
