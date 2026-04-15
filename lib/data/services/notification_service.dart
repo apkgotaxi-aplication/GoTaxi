@@ -32,12 +32,12 @@ class NotificationService {
     );
     OneSignal.Debug.setAlertLevel(OSLogLevel.none);
 
+    await OneSignal.initialize(appId);
+
     OneSignal.Notifications.addClickListener(_handleNotificationTap);
     OneSignal.Notifications.addForegroundWillDisplayListener(
       _handleForegroundNotification,
     );
-
-    await OneSignal.initialize(appId);
     OneSignal.User.pushSubscription.addObserver(_pushObserver);
     OneSignal.Notifications.addPermissionObserver(_permissionObserver);
 
