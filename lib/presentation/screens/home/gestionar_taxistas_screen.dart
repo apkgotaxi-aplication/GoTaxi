@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:gotaxi/data/services/taxista_service.dart';
+import 'package:gotaxi/data/services/rating_service.dart';
+import 'package:gotaxi/models/rating_model.dart';
+import 'package:gotaxi/utils/ratings/rating_utils.dart';
 
 class GestionarTaxistasScreen extends StatefulWidget {
   const GestionarTaxistasScreen({super.key});
@@ -321,9 +324,11 @@ class _TaxistaDetailScreen extends StatefulWidget {
 
 class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
   final _taxistaService = TaxistaService();
+  final _ratingService = RatingService();
   final _rideSearchController = TextEditingController();
 
   late Future<List<Map<String, dynamic>>> _ridesFuture;
+  late Future<TaxistaRatingsSummary> _ratingsSummaryFuture;
   bool _deleting = false;
   String _rideSearchQuery = '';
 
@@ -332,6 +337,7 @@ class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
     super.initState();
     final taxistaId = widget.taxista['id'] as String;
     _ridesFuture = _taxistaService.getTaxistaRideHistory(taxistaId: taxistaId);
+    _ratingsSummaryFuture = _ratingService.getTaxistaRatingsSummary(taxistaId);
   }
 
   @override
@@ -547,6 +553,198 @@ class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
               ],
             ),
             const SizedBox(height: 16),
+            FutureBuilder<TaxistaRatingsSummary>(
+              future: _ratingsSummaryFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const SizedBox(
+                    height: 100,
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+
+                if (snapshot.hasError || snapshot.data == null) {
+                  return const SizedBox.shrink();
+                }
+
+                final summary = snapshot.data!;
+                final incidentPercentageStr =
+                    RatingUtils.formatIncidentPercentage(
+                      summary.incidentPercentage,
+                    );
+                final isHighRate = RatingUtils.isHighIncidentRate(
+                  summary.incidentPercentage,
+                );
+
+                return _DetailSection(
+                  title: '📊 Valoraciones',
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isHighRate
+                            ? Colors.red.shade50
+                            : Colors.green.shade50,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: isHighRate
+                              ? Colors.red.shade300
+                              : Colors.green.shade300,
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                '${summary.totalRatings} valoraciones totales',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isHighRate
+                                      ? Colors.red.shade200
+                                      : Colors.green.shade200,
+                                  borderRadius: BorderRadius.circular(99),
+                                ),
+                                child: Text(
+                                  incidentPercentageStr,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: isHighRate
+                                        ? Colors.red.shade700
+                                        : Colors.green.shade700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  children: [
+                                    Text(
+                                      '${summary.positiveCount}',
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.green.shade600,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Positivas ✓',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodySmall,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  children: [
+                                    Text(
+                                      '${summary.negativeCount}',
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.red.shade600,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Negativas ✗',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodySmall,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (summary.recentIncidents.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            const Divider(),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Últimas incidencias:',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 8),
+                            ...summary.recentIncidents
+                                .take(3)
+                                .map(
+                                  (incident) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.shade50,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.red.shade200,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            incident.motivo ?? 'Sin motivo',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                          if (incident.comentario != null) ...[
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              incident.comentario!,
+                                              style: Theme.of(
+                                                context,
+                                              ).textTheme.bodySmall,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            _formatIncidentDate(
+                                              incident.creadoEn,
+                                            ),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  fontStyle: FontStyle.italic,
+                                                ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+            const SizedBox(height: 16),
             _DetailSection(
               title: 'Viajes realizados',
               children: [
@@ -685,6 +883,23 @@ class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
         ),
       ),
     );
+  }
+
+  String _formatIncidentDate(DateTime date) {
+    final now = DateTime.now();
+    final difference = now.difference(date);
+
+    if (difference.inMinutes < 60) {
+      return 'Hace ${difference.inMinutes} minutos';
+    } else if (difference.inHours < 24) {
+      return 'Hace ${difference.inHours} horas';
+    } else if (difference.inDays < 7) {
+      return 'Hace ${difference.inDays} días';
+    } else {
+      final day = date.day.toString().padLeft(2, '0');
+      final month = date.month.toString().padLeft(2, '0');
+      return '$day/$month';
+    }
   }
 
   String _buildInitials(String nombre, String apellidos) {

@@ -6,7 +6,6 @@ import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
 import 'package:gotaxi/presentation/screens/home/faq_screen.dart';
 import 'package:gotaxi/presentation/screens/home/ride_detail_screen.dart';
 import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
-import 'package:gotaxi/data/services/stripe_payment_service.dart';
 import 'package:gotaxi/data/services/favorites_service.dart';
 import 'package:gotaxi/presentation/fragments/profile/admin_panel_fragment.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
@@ -37,7 +36,6 @@ class _ProfileTabState extends State<ProfileTab> {
   String? _error;
   String _userRole = '';
   Map<String, dynamic>? _activeRide;
-  final StripePaymentService _stripePaymentService = StripePaymentService();
   final FavoritesService _favoritesService = FavoritesService();
 
   @override
@@ -46,75 +44,64 @@ class _ProfileTabState extends State<ProfileTab> {
     _loadProfile();
   }
 
+  @override
+  void dispose() {
+    _nombreController.dispose();
+    _apellidosController.dispose();
+    _emailController.dispose();
+    _telefonoController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadProfile() async {
+    if (!mounted) return;
+
     setState(() {
       _loading = true;
       _error = null;
     });
 
-    Map<String, dynamic>? activeRide;
-
     try {
       final user = _supabase.auth.currentUser;
       if (user == null) {
-        setState(() => _error = 'No se encontró el usuario');
-        return;
+        throw StateError('No hay una cuenta iniciada.');
       }
 
-      final metadata = user.userMetadata ?? {};
-      _nombreController.text = metadata['nombre'] ?? '';
-      _apellidosController.text = metadata['apellidos'] ?? '';
-      _emailController.text = user.email ?? '';
-      _telefonoController.text = metadata['telefono'] ?? '';
-
-      final response = await _supabase
+      final profile = await _supabase
           .from('usuarios')
-          .select('rol')
+          .select('nombre, apellidos, email, telefono, rol')
           .eq('id', user.id)
           .maybeSingle();
 
-      if (response != null && response['rol'] != null) {
-        _userRole = response['rol'].toString();
-        _isCliente = UserPersonalDataUtils.isCliente(_userRole);
-      } else {
-        _isCliente = false;
-        _userRole = 'desconocido';
+      if (profile == null) {
+        throw StateError('No se encontro el perfil del usuario.');
       }
 
-      // Verificar si es admin - puede ser cliente admin o taxista admin
-      if (_isCliente) {
-        // Buscar is_admin en tabla clientes
-        final clienteResponse = await _supabase
-            .from('clientes')
-            .select('is_admin')
-            .eq('id', user.id)
-            .maybeSingle();
+      _nombreController.text = profile['nombre']?.toString() ?? '';
+      _apellidosController.text = profile['apellidos']?.toString() ?? '';
+      _emailController.text = profile['email']?.toString() ?? '';
+      _telefonoController.text = profile['telefono']?.toString() ?? '';
 
-        if (clienteResponse != null) {
-          _isAdmin = clienteResponse['is_admin'] == true;
-        }
+      final role = profile['rol']?.toString().trim().toLowerCase() ?? '';
+      final activeRide = role == 'cliente'
+          ? await _fetchActiveRideForCliente()
+          : null;
 
-        activeRide = await _fetchActiveRideForCliente();
-      } else if (_userRole == 'taxista') {
-        // Buscar is_admin en tabla taxistas
-        final taxistaResponse = await _supabase
-            .from('taxistas')
-            .select('is_admin')
-            .eq('id', user.id)
-            .maybeSingle();
-
-        if (taxistaResponse != null) {
-          _isAdmin = taxistaResponse['is_admin'] == true;
-        }
-
-        activeRide = null;
-      }
+      if (!mounted) return;
+      setState(() {
+        _userRole = role;
+        _isCliente = UserPersonalDataUtils.isCliente(role);
+        _isAdmin = role == 'admin';
+        _activeRide = activeRide;
+      });
     } catch (e) {
-      _error = 'Error al cargar el perfil: $e';
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+      });
     } finally {
       if (mounted) {
         setState(() {
-          _activeRide = activeRide;
           _loading = false;
         });
       }
@@ -122,50 +109,57 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   Future<Map<String, dynamic>?> _fetchActiveRideForCliente() async {
-    try {
-      final rides = await fetchCurrentUserRideHistory(limit: 50);
-      for (final ride in rides) {
-        final state = normalizeRideState(ride['estado']);
-        if (state != 'cancelada' && state != 'finalizada') {
-          return ride;
-        }
+    final rides = await fetchCurrentUserRideHistory(limit: 20);
+
+    for (final ride in rides) {
+      if (_isRideActive(ride)) {
+        return ride;
       }
-      return null;
-    } catch (_) {
-      return null;
     }
+
+    return null;
   }
 
   bool _isRideActive(Map<String, dynamic>? ride) {
     if (ride == null) return false;
+
     final state = normalizeRideState(ride['estado']);
-    return state != 'cancelada' && state != 'finalizada';
+    return state.isNotEmpty && state != 'finalizada' && state != 'cancelada';
   }
 
   Future<void> _showActiveRideDetail() async {
-    final activeRide = _activeRide;
-    final rideId = activeRide?['id']?.toString();
-    if (activeRide == null || rideId == null || rideId.isEmpty) return;
+    final ride = _activeRide;
+    if (ride == null) return;
+
+    final rideId = ride['id']?.toString();
+    if (rideId == null || rideId.isEmpty) return;
 
     final updatedRide = await Navigator.of(context).push<Map<String, dynamic>>(
       MaterialPageRoute(
-        builder: (_) =>
-            RideDetailScreen(rideId: rideId, initialRide: activeRide),
+        builder: (_) => RideDetailScreen(
+          rideId: rideId,
+          initialRide: ride,
+          isDriverView: false,
+        ),
       ),
     );
 
-    if (!mounted) return;
-
-    final refreshedActiveRide = await _fetchActiveRideForCliente();
-    if (!mounted) return;
+    if (updatedRide == null || !mounted) return;
 
     setState(() {
-      if (updatedRide != null && _isRideActive(updatedRide)) {
-        _activeRide = {...(refreshedActiveRide ?? activeRide), ...updatedRide};
-      } else {
-        _activeRide = refreshedActiveRide;
-      }
+      _activeRide = {...ride, ...updatedRide};
     });
+  }
+
+  Future<void> _showMisViajesSheet() async {
+    final initialTab = await _resolveHistoryInitialTab();
+    if (!mounted) return;
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RideHistoryScreen(initialTab: initialTab),
+      ),
+    );
   }
 
   Future<void> _saveProfile() async {
@@ -379,17 +373,6 @@ class _ProfileTabState extends State<ProfileTab> {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Future<void> _showMisViajesSheet() async {
-    final initialTab = await _resolveHistoryInitialTab();
-    if (!mounted) return;
-
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => RideHistoryScreen(initialTab: initialTab),
       ),
     );
   }
@@ -687,172 +670,6 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  void _showMetodosPagoSheet() {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.85,
-        decoration: BoxDecoration(
-          color: colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          children: [
-            Container(
-              margin: const EdgeInsets.only(top: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade400,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Métodos de pago',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: FutureBuilder<List<StripePaymentMethodSummary>>(
-                future: _stripePaymentService.listMyPaymentMethods(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  if (snapshot.hasError) {
-                    return Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Text(
-                          'No se pudieron cargar tus métodos de pago.\n${snapshot.error}',
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    );
-                  }
-
-                  final methods = snapshot.data ?? const [];
-
-                  return ListView(
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                    children: [
-                      Card(
-                        color: colorScheme.surfaceContainerHighest,
-                        child: const Padding(
-                          padding: EdgeInsets.all(16),
-                          child: Text(
-                            'Guardamos solo IDs y metadatos de Stripe. No almacenamos datos sensibles de la tarjeta.',
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      if (methods.isEmpty)
-                        const Card(
-                          child: Padding(
-                            padding: EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Icon(
-                                  Icons.credit_card,
-                                  size: 48,
-                                  color: Colors.grey,
-                                ),
-                                SizedBox(height: 12),
-                                Text('No tienes métodos de pago guardados'),
-                              ],
-                            ),
-                          ),
-                        )
-                      else
-                        ...methods.map(
-                          (method) => Card(
-                            child: ListTile(
-                              leading: Icon(
-                                method.isDefault
-                                    ? Icons.verified_user_outlined
-                                    : Icons.credit_card_outlined,
-                              ),
-                              title: Text(method.label),
-                              subtitle: Text(
-                                method.isDefault
-                                    ? 'Método predeterminado'
-                                    : 'Método guardado en Stripe',
-                              ),
-                            ),
-                          ),
-                        ),
-                      const SizedBox(height: 16),
-                      FilledButton.icon(
-                        onPressed: () async {
-                          try {
-                            final result = await _stripePaymentService
-                                .createPaymentMethodSetupSession();
-
-                            if (!context.mounted) return;
-
-                            if (!result.success || result.checkoutUrl == null) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(result.message),
-                                  backgroundColor: colorScheme.error,
-                                ),
-                              );
-                              return;
-                            }
-
-                            await _stripePaymentService.openCheckoutUrl(
-                              result.checkoutUrl!,
-                            );
-
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  'Se ha abierto Stripe para guardar tu método de pago.',
-                                ),
-                              ),
-                            );
-                          } catch (e) {
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(e.toString()),
-                                backgroundColor: colorScheme.error,
-                              ),
-                            );
-                          }
-                        },
-                        icon: const Icon(Icons.add_card_outlined),
-                        label: const Text('Añadir método de pago'),
-                      ),
-                    ],
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   void _showNotificacionesSheet() {
     final colorScheme = Theme.of(context).colorScheme;
 
@@ -1128,12 +945,6 @@ class _ProfileTabState extends State<ProfileTab> {
         color: Colors.blue,
         onTap: _showMisDatosSheet,
       ),
-      _MenuItem(
-        icon: Icons.credit_card,
-        title: 'Pago',
-        color: Colors.purple,
-        onTap: _showMetodosPagoSheet,
-      ),
     ];
 
     final otrosItems = [
@@ -1359,15 +1170,6 @@ class _ProfileTabState extends State<ProfileTab> {
       trailing: const Icon(Icons.chevron_right),
       onTap: item.onTap,
     );
-  }
-
-  @override
-  void dispose() {
-    _nombreController.dispose();
-    _apellidosController.dispose();
-    _emailController.dispose();
-    _telefonoController.dispose();
-    super.dispose();
   }
 }
 

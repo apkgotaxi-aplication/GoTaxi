@@ -259,6 +259,92 @@ async function upsertSavedPaymentMethod(customerId: string, userId: string, paym
     .eq('id', userId);
 }
 
+async function syncSavedPaymentMethodsFromStripe(userId: string) {
+  if (!stripe) {
+    throw new Error('Stripe no está configurado');
+  }
+
+  const { data: cliente, error } = await supabase
+    .from('clientes')
+    .select('stripe_customer_id, stripe_default_payment_method_id')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  const customerId = cliente?.stripe_customer_id?.toString().trim();
+  if (!customerId) {
+    return { synced: false, count: 0 };
+  }
+
+  const customer = await stripe.customers.retrieve(customerId);
+  if ('deleted' in customer && customer.deleted) {
+    return { synced: false, count: 0 };
+  }
+
+  const defaultPaymentMethodId = typeof customer.invoice_settings?.default_payment_method === 'string'
+    ? customer.invoice_settings.default_payment_method
+    : customer.invoice_settings?.default_payment_method?.id ?? cliente?.stripe_default_payment_method_id ?? null;
+
+  const paymentMethods = await stripe.paymentMethods.list({
+    customer: customerId,
+    type: 'card',
+    limit: 100,
+  });
+
+  const now = new Date().toISOString();
+
+  await supabase
+    .from('cliente_metodos_pago')
+    .update({ is_default: false, updated_at: now })
+    .eq('cliente_id', userId);
+
+  for (const paymentMethod of paymentMethods.data) {
+    const card = paymentMethod.card;
+    await supabase
+      .from('cliente_metodos_pago')
+      .upsert(
+        {
+          cliente_id: userId,
+          stripe_customer_id: customerId,
+          stripe_payment_method_id: paymentMethod.id,
+          brand: card?.brand ?? null,
+          last4: card?.last4 ?? null,
+          exp_month: card?.exp_month ?? null,
+          exp_year: card?.exp_year ?? null,
+          is_default: paymentMethod.id === defaultPaymentMethodId,
+          updated_at: now,
+        },
+        { onConflict: 'stripe_payment_method_id' },
+      );
+  }
+
+  if (defaultPaymentMethodId) {
+    await supabase
+      .from('clientes')
+      .update({ stripe_default_payment_method_id: defaultPaymentMethodId })
+      .eq('id', userId);
+  }
+
+  return {
+    synced: true,
+    count: paymentMethods.data.length,
+    methods: paymentMethods.data.map((paymentMethod) => {
+      const card = paymentMethod.card;
+      return {
+        stripe_payment_method_id: paymentMethod.id,
+        brand: card?.brand ?? null,
+        last4: card?.last4 ?? null,
+        exp_month: card?.exp_month ?? null,
+        exp_year: card?.exp_year ?? null,
+        is_default: paymentMethod.id === defaultPaymentMethodId,
+      };
+    }),
+  };
+}
+
 async function markRidePaid(rideId: string, paymentIntentId: string, paymentStatus: string) {
   const { data: ride, error } = await supabase
     .from('viajes')
@@ -537,6 +623,11 @@ Deno.serve(async (req) => {
 
     if (action === 'setup_method') {
       const result = await createSetupSession(user.id, user.email ?? null);
+      return jsonResponse({ success: true, ...result });
+    }
+
+    if (action === 'sync_payment_methods') {
+      const result = await syncSavedPaymentMethodsFromStripe(user.id);
       return jsonResponse({ success: true, ...result });
     }
 
