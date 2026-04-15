@@ -293,6 +293,11 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
               final origin = ride['origen']?.toString() ?? 'No disponible';
               final destination =
                   ride['destino']?.toString() ?? 'No disponible';
+              final isRated = ride['valorado'] == true;
+              final paymentLabel = ride['pagado'] == true
+                  ? 'Pagado en GoTaxi'
+                  : 'Pagado al taxista';
+              final isPaidInGoTaxi = paymentLabel == 'Pagado en GoTaxi';
               final statusColor = switch (state) {
                 'pendiente' => Colors.orange,
                 'confirmada' => Theme.of(context).colorScheme.primary,
@@ -338,6 +343,77 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
                           Text('Destino: $destination'),
                           const SizedBox(height: 2),
                           Text('Taxista: $driverName $driverApellidos'),
+                          if (_selectedTab == 0) ...[
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color:
+                                        (isRated ? Colors.green : Colors.orange)
+                                            .withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(
+                                      color: isRated
+                                          ? Colors.green.withValues(alpha: 0.45)
+                                          : Colors.orange.withValues(
+                                              alpha: 0.45,
+                                            ),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    isRated
+                                        ? 'Valorado'
+                                        : 'Pendiente de valoración',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: isRated
+                                          ? Colors.green.shade700
+                                          : Colors.orange.shade700,
+                                    ),
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color:
+                                        (isPaidInGoTaxi
+                                                ? Colors.green
+                                                : Colors.blue)
+                                            .withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(
+                                      color:
+                                          (isPaidInGoTaxi
+                                                  ? Colors.green
+                                                  : Colors.blue)
+                                              .withValues(alpha: 0.45),
+                                    ),
+                                  ),
+                                  child: Text(
+                                    paymentLabel,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: isPaidInGoTaxi
+                                          ? Colors.green.shade700
+                                          : Colors.blue.shade700,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                           const SizedBox(height: 8),
                           Row(
                             children: [

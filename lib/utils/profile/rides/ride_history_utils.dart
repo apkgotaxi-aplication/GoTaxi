@@ -14,6 +14,10 @@ bool normalizeRidePaymentStatus(dynamic rawValue) {
   return rawValue == true || rawValue?.toString().toLowerCase() == 'true';
 }
 
+bool normalizeRideRatingStatus(dynamic rawValue) {
+  return rawValue == true || rawValue?.toString().toLowerCase() == 'true';
+}
+
 Future<List<Map<String, dynamic>>> fetchCurrentUserRideHistory({
   int limit = 50,
 }) async {
@@ -35,6 +39,7 @@ Future<List<Map<String, dynamic>>> fetchCurrentUserRideHistory({
       ...ride,
       'estado': state,
       'pagado': normalizeRidePaymentStatus(ride['pagado']),
+      'valorado': normalizeRideRatingStatus(ride['valorado']),
     };
   }).toList();
 }
