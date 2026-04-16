@@ -46,6 +46,28 @@ class RideCancellationResult {
   }
 }
 
+class RideEtaResult {
+  const RideEtaResult({
+    required this.available,
+    this.etaMin,
+    this.distanceKm,
+    this.taxistaLat,
+    this.taxistaLng,
+    this.updatedAt,
+  });
+
+  final bool available;
+  final int? etaMin;
+  final double? distanceKm;
+  final double? taxistaLat;
+  final double? taxistaLng;
+  final DateTime? updatedAt;
+
+  factory RideEtaResult.unavailable() {
+    return const RideEtaResult(available: false);
+  }
+}
+
 class RideService {
   RideService({SupabaseClient? supabase})
     : _supabase = supabase ?? Supabase.instance.client;
@@ -184,6 +206,10 @@ class RideService {
     required int duracionMin,
     required bool minusvalido,
     required String ciudadOrigen,
+    double? origenLat,
+    double? origenLng,
+    double? destinoLat,
+    double? destinoLng,
     DateTime? fechaRecogida,
   }) async {
     final user = _supabase.auth.currentUser;
@@ -191,22 +217,51 @@ class RideService {
       throw StateError('Debes iniciar sesion para pedir un viaje.');
     }
 
-    final raw = await _supabase.rpc(
-      'assign_taxi_to_ride',
-      params: {
-        'p_cliente_id': user.id,
-        'p_origen': origen,
-        'p_destino': destino,
-        'p_num_pasajeros': numPasajeros,
-        'p_anotaciones': anotaciones,
-        'p_distancia': distanciaKm,
-        'p_precio': precio,
-        'p_duracion': duracionMin,
-        'p_minusvalido': minusvalido,
-        'p_ciudad_origen': ciudadOrigen,
-        'p_fecha_recogida': (fechaRecogida ?? DateTime.now()).toIso8601String(),
-      },
-    );
+    final paramsWithCoordinates = {
+      'p_cliente_id': user.id,
+      'p_origen': origen,
+      'p_destino': destino,
+      'p_num_pasajeros': numPasajeros,
+      'p_anotaciones': anotaciones,
+      'p_distancia': distanciaKm,
+      'p_precio': precio,
+      'p_duracion': duracionMin,
+      'p_minusvalido': minusvalido,
+      'p_ciudad_origen': ciudadOrigen,
+      'p_origen_lat': origenLat,
+      'p_origen_lng': origenLng,
+      'p_destino_lat': destinoLat,
+      'p_destino_lng': destinoLng,
+      'p_fecha_recogida': (fechaRecogida ?? DateTime.now()).toIso8601String(),
+    };
+
+    final paramsLegacy = {
+      'p_cliente_id': user.id,
+      'p_origen': origen,
+      'p_destino': destino,
+      'p_num_pasajeros': numPasajeros,
+      'p_anotaciones': anotaciones,
+      'p_distancia': distanciaKm,
+      'p_precio': precio,
+      'p_duracion': duracionMin,
+      'p_minusvalido': minusvalido,
+      'p_ciudad_origen': ciudadOrigen,
+      'p_fecha_recogida': (fechaRecogida ?? DateTime.now()).toIso8601String(),
+    };
+
+    dynamic raw;
+    try {
+      raw = await _supabase.rpc(
+        'assign_taxi_to_ride',
+        params: paramsWithCoordinates,
+      );
+    } on PostgrestException catch (error) {
+      if (!_isLegacyAssignRideSignatureError(error)) {
+        rethrow;
+      }
+
+      raw = await _supabase.rpc('assign_taxi_to_ride', params: paramsLegacy);
+    }
 
     if (raw is List && raw.isNotEmpty) {
       final result = RideAssignmentResult.fromMap(
@@ -247,6 +302,22 @@ class RideService {
       message:
           'No se pudo interpretar la respuesta del servidor. Inténtelo de nuevo más tarde.',
     );
+  }
+
+  bool _isLegacyAssignRideSignatureError(PostgrestException error) {
+    final message = error.message.toLowerCase();
+    final details = (error.details?.toString() ?? '').toLowerCase();
+    final hint = (error.hint?.toString() ?? '').toLowerCase();
+    final combined = '$message $details $hint';
+
+    return combined.contains('assign_taxi_to_ride') &&
+        (combined.contains('p_origen_lat') ||
+            combined.contains('p_origen_lng') ||
+            combined.contains('p_destino_lat') ||
+            combined.contains('p_destino_lng') ||
+            combined.contains('function') ||
+            combined.contains('does not exist') ||
+            combined.contains('no existe'));
   }
 
   RideAssignmentResult _mapErrorMessage(
@@ -371,5 +442,43 @@ class RideService {
     }
 
     return result;
+  }
+
+  Future<RideEtaResult> fetchRideEta({required String rideId}) async {
+    final raw = await _supabase.rpc(
+      'get_ride_eta',
+      params: {'p_viaje_id': rideId},
+    );
+
+    Map<String, dynamic>? data;
+
+    if (raw is List && raw.isNotEmpty) {
+      data = Map<String, dynamic>.from(raw.first as Map);
+    } else if (raw is Map) {
+      data = Map<String, dynamic>.from(raw);
+    }
+
+    if (data == null) {
+      return RideEtaResult.unavailable();
+    }
+
+    final etaMin = int.tryParse(data['eta_min']?.toString() ?? '');
+    final distanceKm = double.tryParse(data['distancia_km']?.toString() ?? '');
+    final lat = double.tryParse(data['taxista_lat']?.toString() ?? '');
+    final lng = double.tryParse(data['taxista_lng']?.toString() ?? '');
+    final updatedAtRaw = data['ubicacion_actualizada_en']?.toString();
+
+    if (etaMin == null || distanceKm == null || lat == null || lng == null) {
+      return RideEtaResult.unavailable();
+    }
+
+    return RideEtaResult(
+      available: true,
+      etaMin: etaMin,
+      distanceKm: distanceKm,
+      taxistaLat: lat,
+      taxistaLng: lng,
+      updatedAt: updatedAtRaw == null ? null : DateTime.tryParse(updatedAtRaw),
+    );
   }
 }

@@ -1,6 +1,7 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 const Set<String> kCancelableRideStates = {'pendiente', 'confirmada'};
+const Set<String> kHistoryVisibleRideStates = {'finalizada', 'cancelada'};
 
 String normalizeRideState(dynamic rawState) {
   return rawState?.toString().trim().toLowerCase() ?? '';
@@ -8,6 +9,10 @@ String normalizeRideState(dynamic rawState) {
 
 bool isRideCancelable(dynamic rawState) {
   return kCancelableRideStates.contains(normalizeRideState(rawState));
+}
+
+bool isRideVisibleInHistory(dynamic rawState) {
+  return kHistoryVisibleRideStates.contains(normalizeRideState(rawState));
 }
 
 bool normalizeRidePaymentStatus(dynamic rawValue) {
@@ -33,15 +38,18 @@ Future<List<Map<String, dynamic>>> fetchCurrentUserRideHistory({
     params: {'p_user_id': currentUser.id, 'p_limit': limit},
   );
 
-  return List<Map<String, dynamic>>.from(response).map((ride) {
-    final state = normalizeRideState(ride['estado']);
-    return {
-      ...ride,
-      'estado': state,
-      'pagado': normalizeRidePaymentStatus(ride['pagado']),
-      'valorado': normalizeRideRatingStatus(ride['valorado']),
-    };
-  }).toList();
+  return List<Map<String, dynamic>>.from(response)
+      .map((ride) {
+        final state = normalizeRideState(ride['estado']);
+        return {
+          ...ride,
+          'estado': state,
+          'pagado': normalizeRidePaymentStatus(ride['pagado']),
+          'valorado': normalizeRideRatingStatus(ride['valorado']),
+        };
+      })
+      .where((ride) => isRideVisibleInHistory(ride['estado']))
+      .toList();
 }
 
 Future<List<Map<String, dynamic>>> fetchCurrentUserDriverRideHistory({
@@ -59,14 +67,17 @@ Future<List<Map<String, dynamic>>> fetchCurrentUserDriverRideHistory({
     params: {'p_driver_id': currentUser.id, 'p_limit': limit},
   );
 
-  return List<Map<String, dynamic>>.from(response).map((ride) {
-    final state = normalizeRideState(ride['estado']);
-    return {
-      ...ride,
-      'estado': state,
-      'pagado': normalizeRidePaymentStatus(ride['pagado']),
-    };
-  }).toList();
+  return List<Map<String, dynamic>>.from(response)
+      .map((ride) {
+        final state = normalizeRideState(ride['estado']);
+        return {
+          ...ride,
+          'estado': state,
+          'pagado': normalizeRidePaymentStatus(ride['pagado']),
+        };
+      })
+      .where((ride) => isRideVisibleInHistory(ride['estado']))
+      .toList();
 }
 
 Future<Map<String, dynamic>> fetchCurrentUserRideDetail({

@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:gotaxi/data/services/taxista_service.dart';
 import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
 
@@ -15,13 +18,22 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
   bool _loading = true;
   bool _updatingStatus = false;
   bool _processingRideAction = false;
+  bool _updatingLocation = false;
+  bool _locationSharingEnabled = false;
   String? _error;
   DriverDashboardData? _dashboardData;
+  Timer? _locationUpdateTimer;
 
   @override
   void initState() {
     super.initState();
     _loadDashboard();
+  }
+
+  @override
+  void dispose() {
+    _locationUpdateTimer?.cancel();
+    super.dispose();
   }
 
   String _formatDuration(dynamic rawMinutes) {
@@ -69,6 +81,10 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
         _dashboardData = data;
         _loading = false;
       });
+      if (data.viajeActivo == null) {
+        _locationSharingEnabled = false;
+      }
+      _syncLocationTracking(data.viajeActivo);
 
       if (!data.success && data.message.isNotEmpty) {
         _showMessage(data.message, isError: true);
@@ -79,7 +95,165 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
         _loading = false;
         _error = 'No se pudo cargar el dashboard: $e';
       });
+      _syncLocationTracking(null);
     }
+  }
+
+  bool _shouldTrackLocation(Map<String, dynamic>? activeRide) {
+    final state = activeRide?['estado']?.toString().trim().toLowerCase();
+    return _locationSharingEnabled &&
+        (state == 'confirmada' || state == 'en_curso');
+  }
+
+  void _syncLocationTracking(Map<String, dynamic>? activeRide) {
+    if (_shouldTrackLocation(activeRide)) {
+      _locationUpdateTimer ??= Timer.periodic(
+        const Duration(seconds: 15),
+        (_) => unawaited(_pushCurrentLocation()),
+      );
+      return;
+    }
+
+    _locationUpdateTimer?.cancel();
+    _locationUpdateTimer = null;
+  }
+
+  Future<bool> _pushCurrentLocation({bool notifyOnError = false}) async {
+    if (_updatingLocation) return false;
+    _updatingLocation = true;
+
+    try {
+      final canUseLocation = await _ensureLocationPermission(
+        showSettingsOnDeniedForever: false,
+      );
+      if (!canUseLocation) {
+        return false;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.bestForNavigation,
+        ),
+      );
+
+      final result = await _taxistaService.updateDriverLocation(
+        lat: position.latitude,
+        lng: position.longitude,
+      );
+
+      if (!result.success) {
+        if (notifyOnError) {
+          _showMessage(
+            result.message.isNotEmpty
+                ? result.message
+                : 'No se pudo compartir la ubicación.',
+            isError: true,
+          );
+        }
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      if (notifyOnError) {
+        final raw = e.toString();
+        final message = raw.contains('update_driver_location')
+            ? 'No se pudo guardar tu ubicación en el servidor. Verifica migraciones y vuelve a intentar.'
+            : 'No se pudo compartir tu ubicación: $raw';
+        _showMessage(message, isError: true);
+      }
+      return false;
+    } finally {
+      _updatingLocation = false;
+    }
+  }
+
+  Future<void> _shareLocationForRide(String rideId) async {
+    final ride = _dashboardData?.viajeActivo;
+    final state = ride?['estado']?.toString().trim().toLowerCase();
+
+    if (ride == null || rideId.isEmpty || state != 'confirmada') {
+      _showMessage(
+        'Solo puedes compartir ubicación cuando el viaje está confirmado.',
+        isError: true,
+      );
+      return;
+    }
+
+    final canUseLocation = await _ensureLocationPermission(
+      showSettingsOnDeniedForever: true,
+    );
+    if (!canUseLocation) {
+      return;
+    }
+
+    final published = await _pushCurrentLocation(notifyOnError: true);
+    if (!published) {
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _locationSharingEnabled = true;
+    });
+
+    _syncLocationTracking(ride);
+
+    if (!mounted) return;
+    _showMessage(
+      'Ubicación compartida activada. El cliente ya puede ver su ubicación.',
+      isError: false,
+    );
+  }
+
+  Future<bool> _ensureLocationPermission({
+    required bool showSettingsOnDeniedForever,
+  }) async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _showMessage('Activa el GPS para compartir tu ubicación.', isError: true);
+      return false;
+    }
+
+    final permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.always ||
+        permission == LocationPermission.whileInUse) {
+      return true;
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      _showMessage(
+        'Tienes el permiso de ubicación bloqueado. Ábrelo desde Ajustes para continuar.',
+        isError: true,
+      );
+      if (showSettingsOnDeniedForever) {
+        await Geolocator.openAppSettings();
+      }
+      return false;
+    }
+
+    final requestedPermission = await Geolocator.requestPermission();
+    if (requestedPermission == LocationPermission.always ||
+        requestedPermission == LocationPermission.whileInUse) {
+      return true;
+    }
+
+    if (requestedPermission == LocationPermission.deniedForever) {
+      _showMessage(
+        'Tienes el permiso de ubicación bloqueado. Ábrelo desde Ajustes para continuar.',
+        isError: true,
+      );
+      if (showSettingsOnDeniedForever) {
+        await Geolocator.openAppSettings();
+      }
+      return false;
+    }
+
+    _showMessage(
+      'Necesitamos permiso de ubicación para que el cliente vea el ETA.',
+      isError: true,
+    );
+    return false;
   }
 
   Future<void> _toggleDisponibilidad() async {
@@ -476,7 +650,21 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                     ),
                   ),
                 if (estado == 'confirmada') const SizedBox(width: 8),
-                if (estado == 'pendiente' || estado == 'confirmada')
+                if (estado == 'confirmada')
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: (rideId.isEmpty || _processingRideAction)
+                          ? null
+                          : () => _shareLocationForRide(rideId),
+                      child: Text(
+                        _locationSharingEnabled
+                            ? 'Ubicación compartida'
+                            : 'Compartir ubicación',
+                      ),
+                    ),
+                  ),
+                if (estado == 'confirmada') const SizedBox(width: 8),
+                if (estado == 'pendiente')
                   Expanded(
                     child: OutlinedButton(
                       onPressed: (rideId.isEmpty || _processingRideAction)

@@ -6,9 +6,11 @@ const STRIPE_WEBHOOK_SECRET = Deno.env.get('STRIPE_WEBHOOK_SECRET');
 const APP_DEEPLINK_BASE = (Deno.env.get('APP_DEEPLINK_BASE') ?? 'gotaxi://stripe').replace(/\/$/, '');
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
 const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
+const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey);
 
 const stripe = STRIPE_SECRET_KEY
   ? new Stripe(STRIPE_SECRET_KEY, {
@@ -46,41 +48,15 @@ async function getAuthenticatedUser(req: Request) {
     return null;
   }
 
-  const payload = decodeJwtPayload(token);
-  if (!payload?.sub) {
+  const { data, error } = await supabaseAuth.auth.getUser(token);
+  if (error || !data.user) {
     return null;
   }
 
   return {
-    id: payload.sub as string,
-    email: (payload.email as string | undefined) ?? null,
+    id: data.user.id,
+    email: data.user.email ?? null,
   };
-}
-
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    return null;
-  }
-
-  try {
-    const payloadBase64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const padded = payloadBase64.padEnd(Math.ceil(payloadBase64.length / 4) * 4, '=');
-    const json = atob(padded);
-    const payload = JSON.parse(json) as Record<string, unknown>;
-
-    const exp = typeof payload.exp === 'number' ? payload.exp : Number(payload.exp ?? 0);
-    if (Number.isFinite(exp) && exp > 0) {
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      if (exp < nowSeconds) {
-        return null;
-      }
-    }
-
-    return payload;
-  } catch (_) {
-    return null;
-  }
 }
 
 async function getOrCreateStripeCustomer(userId: string, email?: string | null) {

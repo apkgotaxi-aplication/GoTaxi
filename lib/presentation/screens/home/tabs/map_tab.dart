@@ -741,6 +741,10 @@ class _MapTabState extends State<MapTab> {
             ? '${origin.latitude},${origin.longitude}'
             : _originController.text.trim(),
         destino: _destinationController.text.trim(),
+        origenLat: origin.latitude,
+        origenLng: origin.longitude,
+        destinoLat: destination.latitude,
+        destinoLng: destination.longitude,
         numPasajeros: 1,
         anotaciones: anotaciones,
         distanciaKm: distanciaKm,

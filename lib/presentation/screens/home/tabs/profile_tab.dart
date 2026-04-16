@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:gotaxi/data/services/notification_service.dart';
+import 'package:gotaxi/data/services/taxista_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:gotaxi/presentation/screens/home/about_us_screen.dart';
 import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
@@ -37,6 +38,7 @@ class _ProfileTabState extends State<ProfileTab> {
   String _userRole = '';
   Map<String, dynamic>? _activeRide;
   final FavoritesService _favoritesService = FavoritesService();
+  final TaxistaService _taxistaService = TaxistaService();
 
   @override
   void initState() {
@@ -86,12 +88,13 @@ class _ProfileTabState extends State<ProfileTab> {
       final activeRide = role == 'cliente'
           ? await _fetchActiveRideForCliente()
           : null;
+      final isAdmin = await _taxistaService.isUserAdmin();
 
       if (!mounted) return;
       setState(() {
         _userRole = role;
         _isCliente = UserPersonalDataUtils.isCliente(role);
-        _isAdmin = role == 'admin';
+        _isAdmin = isAdmin;
         _activeRide = activeRide;
       });
     } catch (e) {
@@ -109,7 +112,38 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   Future<Map<String, dynamic>?> _fetchActiveRideForCliente() async {
-    final rides = await fetchCurrentUserRideHistory(limit: 20);
+    final user = _supabase.auth.currentUser;
+    if (user == null) return null;
+
+    final response = await _supabase
+        .from('viajes')
+        .select(
+          'id, created_at, estado, origen, destino, precio, pagado, driver_id, '
+          'stripe_payment_status, driver:usuarios!viajes_driver_id_fkey(nombre, apellidos)',
+        )
+        .eq('user_id', user.id)
+        .inFilter('estado', ['pendiente', 'confirmada', 'en_curso'])
+        .order('created_at', ascending: false)
+        .limit(1);
+
+    final rides = List<Map<String, dynamic>>.from(response).map((ride) {
+      final driver = ride['driver'];
+      String? driverNombre;
+      String? driverApellidos;
+
+      if (driver is Map) {
+        driverNombre = driver['nombre']?.toString();
+        driverApellidos = driver['apellidos']?.toString();
+      }
+
+      return {
+        ...ride,
+        'estado': normalizeRideState(ride['estado']),
+        'pagado': normalizeRidePaymentStatus(ride['pagado']),
+        'driver_nombre': driverNombre,
+        'driver_apellidos': driverApellidos,
+      };
+    }).toList();
 
     for (final ride in rides) {
       if (_isRideActive(ride)) {
@@ -924,12 +958,13 @@ class _ProfileTabState extends State<ProfileTab> {
         color: Colors.green,
         onTap: _showMisViajesSheet,
       ),
-      _MenuItem(
-        icon: Icons.star_outline,
-        title: 'Favoritos',
-        color: Colors.amber,
-        onTap: _showFavoritosSheet,
-      ),
+      if (_isCliente)
+        _MenuItem(
+          icon: Icons.star_outline,
+          title: 'Favoritos',
+          color: Colors.amber,
+          onTap: _showFavoritosSheet,
+        ),
       _MenuItem(
         icon: Icons.notifications_outlined,
         title: 'Notificaciones',

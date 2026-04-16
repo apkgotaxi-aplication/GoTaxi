@@ -37,9 +37,16 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   bool _waitingStripeReturn = false;
   bool _checkingPaymentStatus = false;
   bool _optimisticPaidUntilSync = false;
+  bool _refreshInProgress = false;
   bool _isRated = false;
   bool _ratingInProgress = false;
+  int? _etaMinutes;
+  double? _etaDistanceKm;
+  DateTime? _etaUpdatedAt;
+  DateTime? _etaArrivalAt;
   StreamSubscription<Uri>? _deepLinkSubscription;
+  Timer? _refreshTimer;
+  Timer? _etaTimer;
   String? _pendingCheckoutSessionId;
 
   @override
@@ -49,6 +56,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     _detailFuture = _fetchRideDetail();
     unawaited(_tryAutoSyncPendingPayment());
     unawaited(_checkRatingStatus());
+    _startAutoRefresh();
     _deepLinkSubscription = AppLinksService.instance.uriStream.listen(
       _handleStripeDeepLink,
     );
@@ -56,9 +64,23 @@ class _RideDetailScreenState extends State<RideDetailScreen>
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
+    _etaTimer?.cancel();
     _deepLinkSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  void _startAutoRefresh() {
+    if (widget.isDriverView) return;
+
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => unawaited(_refreshDetailAndEta()),
+    );
+
+    unawaited(_refreshDetailAndEta());
   }
 
   void _handleStripeDeepLink(Uri uri) {
@@ -253,10 +275,139 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   }
 
   Future<void> _reload() async {
-    setState(() {
-      _detailFuture = _fetchRideDetail();
+    await _refreshDetailAndEta();
+  }
+
+  Future<void> _refreshDetailAndEta() async {
+    if (_refreshInProgress) return;
+    _refreshInProgress = true;
+
+    try {
+      final latest = await _fetchRideDetail();
+      if (!mounted) return;
+
+      final displayDetail = _withOptimisticPaid(latest);
+      final state = normalizeRideState(latest['estado']);
+
+      setState(() {
+        _detailFuture = Future<Map<String, dynamic>>.value(displayDetail);
+      });
+
+      if (state == 'confirmada') {
+        await _refreshEta();
+      } else {
+        if (!mounted) return;
+        setState(() {
+          _etaMinutes = null;
+          _etaDistanceKm = null;
+          _etaUpdatedAt = null;
+          _etaArrivalAt = null;
+        });
+        _stopEtaTicker();
+      }
+    } catch (_) {
+      // Ignora errores transitorios de red para no bloquear la pantalla.
+    } finally {
+      _refreshInProgress = false;
+    }
+  }
+
+  Future<void> _refreshEta() async {
+    try {
+      final result = await _rideService.fetchRideEta(rideId: widget.rideId);
+      if (!mounted) return;
+
+      if (!result.available || result.etaMin == null) {
+        // Mantener el ultimo ETA conocido evita volver al estado de espera
+        // cuando no hay actualizaciones nuevas (p. ej. taxista sin sesion activa).
+        if (_etaUpdatedAt != null && _etaArrivalAt != null) {
+          _startEtaTicker();
+          return;
+        }
+
+        setState(() {
+          _etaMinutes = null;
+          _etaDistanceKm = null;
+          _etaUpdatedAt = null;
+          _etaArrivalAt = null;
+        });
+        _stopEtaTicker();
+        return;
+      }
+
+      final updatedAt = result.updatedAt?.toLocal();
+      final arrivalAt = updatedAt?.add(Duration(minutes: result.etaMin!));
+
+      setState(() {
+        _etaMinutes = result.etaMin;
+        _etaDistanceKm = result.distanceKm;
+        _etaUpdatedAt = updatedAt;
+        _etaArrivalAt = arrivalAt;
+      });
+
+      _startEtaTicker();
+    } catch (_) {
+      if (!mounted) return;
+
+      if (_etaUpdatedAt != null && _etaArrivalAt != null) {
+        _startEtaTicker();
+        return;
+      }
+
+      setState(() {
+        _etaMinutes = null;
+        _etaDistanceKm = null;
+        _etaUpdatedAt = null;
+        _etaArrivalAt = null;
+      });
+      _stopEtaTicker();
+    }
+  }
+
+  void _startEtaTicker() {
+    if (widget.isDriverView) return;
+    _etaTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {});
     });
-    await _detailFuture;
+  }
+
+  void _stopEtaTicker() {
+    _etaTimer?.cancel();
+    _etaTimer = null;
+  }
+
+  String _formatDuration(Duration duration) {
+    final safeDuration = duration.isNegative ? Duration.zero : duration;
+    final hours = safeDuration.inHours;
+    final minutes = safeDuration.inMinutes.remainder(60);
+    final seconds = safeDuration.inSeconds.remainder(60);
+
+    if (hours > 0) {
+      return '${hours}h ${minutes.toString().padLeft(2, '0')}m';
+    }
+
+    return '${minutes.toString().padLeft(2, '0')}m ${seconds.toString().padLeft(2, '0')}s';
+  }
+
+  String _buildEtaCountdownText() {
+    final arrivalAt = _etaArrivalAt;
+    if (arrivalAt == null) return 'No disponible';
+
+    final remaining = arrivalAt.difference(DateTime.now());
+    if (remaining.isNegative || remaining == Duration.zero) {
+      return 'Llegada inminente';
+    }
+
+    return _formatDuration(remaining);
+  }
+
+  String _buildLastUpdateText() {
+    final updatedAt = _etaUpdatedAt;
+    if (updatedAt == null) return 'Sin actualización';
+
+    final elapsed = DateTime.now().difference(updatedAt);
+    return _formatDuration(elapsed);
   }
 
   String _formatDate(dynamic rawValue) {
@@ -346,6 +497,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
         return scheme.error;
       case 'finalizada':
         return Colors.green;
+      case 'en_curso':
+        return widget.isDriverView ? scheme.outline : Colors.red;
       default:
         return scheme.outline;
     }
@@ -1097,6 +1250,66 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                 ),
               ),
               if (!widget.isDriverView) ...[
+                if (state == 'confirmada' && _etaMinutes != null) ...[
+                  const SizedBox(height: 10),
+                  Card(
+                    color: colorScheme.primary.withValues(alpha: 0.08),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: BorderSide(
+                        color: colorScheme.primary.withValues(alpha: 0.5),
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.directions_car_filled_rounded,
+                            color: colorScheme.primary,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Tu taxista está en camino',
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Llega en aproximadamente ${_buildEtaCountdownText()}',
+                                  style: Theme.of(context).textTheme.bodyLarge,
+                                ),
+                                if (_etaDistanceKm != null) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Distancia al origen: ${_etaDistanceKm!.toStringAsFixed(1)} km',
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodyMedium,
+                                  ),
+                                ],
+                                if (_etaUpdatedAt != null) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Última actualización de la ubicación: ${_buildLastUpdateText()}',
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 Card(
                   shape: RoundedRectangleBorder(
@@ -1118,6 +1331,36 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                     ),
                   ),
                 ),
+                if (state == 'confirmada' && _etaMinutes == null) ...[
+                  const SizedBox(height: 10),
+                  Card(
+                    color: colorScheme.primary.withValues(alpha: 0.08),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: BorderSide(
+                        color: colorScheme.primary.withValues(alpha: 0.35),
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.location_searching_outlined,
+                            color: colorScheme.primary,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Esperando que el taxista comparta su ubicación...',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ],
               if (!widget.isDriverView &&
                   normalizeRideState(detail['estado']) == 'finalizada' &&
