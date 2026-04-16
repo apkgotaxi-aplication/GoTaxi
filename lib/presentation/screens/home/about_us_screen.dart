@@ -90,7 +90,7 @@ class AboutUsScreen extends StatelessWidget {
             title: 'Nuestra mision',
             child: const Text(
               'Conectar personas y ciudades con soluciones de movilidad seguras, eficientes y accesibles, elevando la experiencia del usuario en cada trayecto.\n\n'
-              'Texto de ejemplo: REEMPLAZAR por la propuesta de valor oficial de la empresa.',
+              'Sabemos lo dificil que es moverse por la ciudad, y queremos hacerlo facil, rapido y seguro para todos.',
             ),
           ),
           const SizedBox(height: 12),
@@ -98,7 +98,7 @@ class AboutUsScreen extends StatelessWidget {
             title: 'Que hacemos',
             child: const Text(
               'Ofrecemos una plataforma para solicitar viajes urbanos, gestionar pagos y dar soporte en tiempo real para clientes y conductores.\n\n'
-              'Texto de ejemplo: REEMPLAZAR por servicios y alcance reales.',
+              'Esto de las aplicaciones de movilidad, no es solo para grandes ciudades, sino que queremos llegar a cada rincón, para que moverse por los pueblos sea mas sencillo.',
             ),
           ),
           const SizedBox(height: 12),
@@ -117,9 +117,6 @@ class AboutUsScreen extends StatelessWidget {
                 SizedBox(height: 8),
                 _ValueRow(text: 'Mejora continua mediante tecnologia y datos.'),
                 SizedBox(height: 12),
-                Text(
-                  'Lista de ejemplo: REEMPLAZAR por valores corporativos oficiales.',
-                ),
               ],
             ),
           ),

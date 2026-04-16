@@ -4,7 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:gotaxi/data/services/app_links_service.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
 import 'package:gotaxi/data/services/stripe_payment_service.dart';
+import 'package:gotaxi/data/services/rating_service.dart';
+import 'package:gotaxi/models/rating_model.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
+import 'package:gotaxi/utils/ratings/rating_utils.dart';
 
 class RideDetailScreen extends StatefulWidget {
   const RideDetailScreen({
@@ -26,6 +29,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     with WidgetsBindingObserver {
   final RideService _rideService = RideService();
   final StripePaymentService _stripePaymentService = StripePaymentService();
+  final RatingService _ratingService = RatingService();
 
   late Future<Map<String, dynamic>> _detailFuture;
   bool _isCancelling = false;
@@ -33,7 +37,16 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   bool _waitingStripeReturn = false;
   bool _checkingPaymentStatus = false;
   bool _optimisticPaidUntilSync = false;
+  bool _refreshInProgress = false;
+  bool _isRated = false;
+  bool _ratingInProgress = false;
+  int? _etaMinutes;
+  double? _etaDistanceKm;
+  DateTime? _etaUpdatedAt;
+  DateTime? _etaArrivalAt;
   StreamSubscription<Uri>? _deepLinkSubscription;
+  Timer? _refreshTimer;
+  Timer? _etaTimer;
   String? _pendingCheckoutSessionId;
 
   @override
@@ -42,6 +55,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     WidgetsBinding.instance.addObserver(this);
     _detailFuture = _fetchRideDetail();
     unawaited(_tryAutoSyncPendingPayment());
+    unawaited(_checkRatingStatus());
+    _startAutoRefresh();
     _deepLinkSubscription = AppLinksService.instance.uriStream.listen(
       _handleStripeDeepLink,
     );
@@ -49,9 +64,23 @@ class _RideDetailScreenState extends State<RideDetailScreen>
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
+    _etaTimer?.cancel();
     _deepLinkSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  void _startAutoRefresh() {
+    if (widget.isDriverView) return;
+
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => unawaited(_refreshDetailAndEta()),
+    );
+
+    unawaited(_refreshDetailAndEta());
   }
 
   void _handleStripeDeepLink(Uri uri) {
@@ -246,16 +275,167 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   }
 
   Future<void> _reload() async {
-    setState(() {
-      _detailFuture = _fetchRideDetail();
+    await _refreshDetailAndEta();
+  }
+
+  Future<void> _refreshDetailAndEta() async {
+    if (_refreshInProgress) return;
+    _refreshInProgress = true;
+
+    try {
+      final latest = await _fetchRideDetail();
+      if (!mounted) return;
+
+      final displayDetail = _withOptimisticPaid(latest);
+      final state = normalizeRideState(latest['estado']);
+
+      setState(() {
+        _detailFuture = Future<Map<String, dynamic>>.value(displayDetail);
+      });
+
+      if (state == 'confirmada') {
+        await _refreshEta();
+      } else {
+        if (!mounted) return;
+        setState(() {
+          _etaMinutes = null;
+          _etaDistanceKm = null;
+          _etaUpdatedAt = null;
+          _etaArrivalAt = null;
+        });
+        _stopEtaTicker();
+      }
+    } catch (_) {
+      // Ignora errores transitorios de red para no bloquear la pantalla.
+    } finally {
+      _refreshInProgress = false;
+    }
+  }
+
+  Future<void> _refreshEta() async {
+    try {
+      final result = await _rideService.fetchRideEta(rideId: widget.rideId);
+      if (!mounted) return;
+
+      if (!result.available || result.etaMin == null) {
+        // Mantener el ultimo ETA conocido evita volver al estado de espera
+        // cuando no hay actualizaciones nuevas (p. ej. taxista sin sesion activa).
+        if (_etaUpdatedAt != null && _etaArrivalAt != null) {
+          _startEtaTicker();
+          return;
+        }
+
+        setState(() {
+          _etaMinutes = null;
+          _etaDistanceKm = null;
+          _etaUpdatedAt = null;
+          _etaArrivalAt = null;
+        });
+        _stopEtaTicker();
+        return;
+      }
+
+      final updatedAt = result.updatedAt?.toLocal();
+      final arrivalAt = updatedAt?.add(Duration(minutes: result.etaMin!));
+
+      setState(() {
+        _etaMinutes = result.etaMin;
+        _etaDistanceKm = result.distanceKm;
+        _etaUpdatedAt = updatedAt;
+        _etaArrivalAt = arrivalAt;
+      });
+
+      _startEtaTicker();
+    } catch (_) {
+      if (!mounted) return;
+
+      if (_etaUpdatedAt != null && _etaArrivalAt != null) {
+        _startEtaTicker();
+        return;
+      }
+
+      setState(() {
+        _etaMinutes = null;
+        _etaDistanceKm = null;
+        _etaUpdatedAt = null;
+        _etaArrivalAt = null;
+      });
+      _stopEtaTicker();
+    }
+  }
+
+  void _startEtaTicker() {
+    if (widget.isDriverView) return;
+    _etaTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {});
     });
-    await _detailFuture;
+  }
+
+  void _stopEtaTicker() {
+    _etaTimer?.cancel();
+    _etaTimer = null;
+  }
+
+  String _formatDuration(Duration duration) {
+    final safeDuration = duration.isNegative ? Duration.zero : duration;
+    final hours = safeDuration.inHours;
+    final minutes = safeDuration.inMinutes.remainder(60);
+    final seconds = safeDuration.inSeconds.remainder(60);
+
+    if (hours > 0) {
+      return '${hours}h ${minutes.toString().padLeft(2, '0')}m';
+    }
+
+    return '${minutes.toString().padLeft(2, '0')}m ${seconds.toString().padLeft(2, '0')}s';
+  }
+
+  String _buildEtaCountdownText() {
+    final arrivalAt = _etaArrivalAt;
+    if (arrivalAt == null) return 'No disponible';
+
+    final remaining = arrivalAt.difference(DateTime.now());
+    if (remaining.isNegative || remaining == Duration.zero) {
+      return 'Llegada inminente';
+    }
+
+    return _formatDuration(remaining);
+  }
+
+  String _buildLastUpdateText() {
+    final updatedAt = _etaUpdatedAt;
+    if (updatedAt == null) return 'Sin actualización';
+
+    final elapsed = DateTime.now().difference(updatedAt);
+    return _formatDuration(elapsed);
   }
 
   String _formatDate(dynamic rawValue) {
     if (rawValue == null) return 'Sin fecha';
     final parsed = DateTime.tryParse(rawValue.toString());
     if (parsed == null) return rawValue.toString();
+
+    final local = parsed.toLocal();
+    final day = local.day.toString().padLeft(2, '0');
+    final month = local.month.toString().padLeft(2, '0');
+    final year = local.year;
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$day/$month/$year $hour:$minute';
+  }
+
+  String _formatDatabaseDate(dynamic rawValue) {
+    if (rawValue == null) return 'Sin fecha';
+
+    final raw = rawValue.toString().trim();
+    if (raw.isEmpty) return 'Sin fecha';
+
+    final hasTimezone = RegExp(
+      r'(z|[+-]\d\d:?\d\d)$',
+      caseSensitive: false,
+    ).hasMatch(raw);
+    final parsed = DateTime.tryParse(hasTimezone ? raw : '${raw}Z');
+    if (parsed == null) return raw;
 
     final local = parsed.toLocal();
     final day = local.day.toString().padLeft(2, '0');
@@ -339,6 +519,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
         return scheme.error;
       case 'finalizada':
         return Colors.green;
+      case 'en_curso':
+        return widget.isDriverView ? scheme.outline : Colors.red;
       default:
         return scheme.outline;
     }
@@ -475,6 +657,347 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     }
   }
 
+  /// Check if the current ride has been rated already
+  Future<void> _checkRatingStatus() async {
+    try {
+      final result = await _ratingService.checkIfRideRated(widget.rideId);
+      if (mounted) {
+        setState(() {
+          _isRated = result.isRated;
+        });
+      }
+    } catch (e) {
+      print('Error checking rating status: $e');
+    }
+  }
+
+  /// Show the main rating bottom sheet (green/red thumbs)
+  void _showRatingBottomSheet(Map<String, dynamic> detail) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '¿Cómo fue tu viaje?',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 32),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  // Green thumb button (positive)
+                  InkWell(
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _showPositiveRatingDialog(detail);
+                    },
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade100,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Icons.thumb_up,
+                            size: 48,
+                            color: Colors.green.shade600,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Excelente',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                      ],
+                    ),
+                  ),
+                  // Red thumb button (negative)
+                  InkWell(
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      _showNegativeRatingDialog(detail);
+                    },
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: Colors.red.shade100,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Icons.thumb_down,
+                            size: 48,
+                            color: Colors.red.shade600,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Malo',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// Show dialog for positive rating (with optional comment)
+  void _showPositiveRatingDialog(Map<String, dynamic> detail) {
+    final controllerCommentario = TextEditingController();
+
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Gran viaje'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('¿Quieres agregar un comentario?'),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controllerCommentario,
+                maxLines: 3,
+                decoration: InputDecoration(
+                  hintText: 'Tu comentario aquí...',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _submitRating(
+                  detail: detail,
+                  tipo: RatingType.positiva,
+                  comentario: controllerCommentario.text.trim().isEmpty
+                      ? null
+                      : controllerCommentario.text.trim(),
+                );
+              },
+              child: const Text('Enviar'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Show dialog for negative rating (with mandatory motive selection)
+  void _showNegativeRatingDialog(Map<String, dynamic> detail) {
+    RatingMotive? selectedMotive;
+    final controllerCommentario = TextEditingController();
+
+    showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Lo sentimos'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('¿Cuál fue el problema?'),
+                  const SizedBox(height: 12),
+                  DropdownButton<RatingMotive>(
+                    isExpanded: true,
+                    value: selectedMotive,
+                    hint: const Text('Selecciona un motivo'),
+                    items: RatingConstants.negativeMotives.map((motive) {
+                      return DropdownMenuItem(
+                        value: motive,
+                        child: Text(motive.toDisplayString()),
+                      );
+                    }).toList(),
+                    onChanged: (value) {
+                      setDialogState(() {
+                        selectedMotive = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    selectedMotive == RatingMotive.otra
+                        ? 'Cuéntanos qué pasó (obligatorio):'
+                        : 'Cuéntanos más (opcional):',
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: controllerCommentario,
+                    maxLines: 3,
+                    onChanged: (_) => setDialogState(() {}),
+                    decoration: InputDecoration(
+                      hintText: selectedMotive == RatingMotive.otra
+                          ? 'Escribe el motivo...'
+                          : 'Tu comentario aquí...',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancelar'),
+                ),
+                FilledButton(
+                  onPressed:
+                      selectedMotive == null ||
+                          (selectedMotive == RatingMotive.otra &&
+                              controllerCommentario.text.trim().isEmpty)
+                      ? null
+                      : () {
+                          Navigator.of(context).pop();
+                          _submitRating(
+                            detail: detail,
+                            tipo: RatingType.negativa,
+                            motivo: selectedMotive,
+                            comentario:
+                                controllerCommentario.text.trim().isEmpty
+                                ? null
+                                : controllerCommentario.text.trim(),
+                          );
+                        },
+                  child: const Text('Enviar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Submit the rating to Supabase
+  Future<void> _submitRating({
+    required Map<String, dynamic> detail,
+    required RatingType tipo,
+    RatingMotive? motivo,
+    String? comentario,
+  }) async {
+    if (_ratingInProgress) return;
+
+    final taxistaId = _resolveTaxistaId(detail);
+
+    if (taxistaId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No se pudo obtener el ID del taxista'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() => _ratingInProgress = true);
+
+    try {
+      final result = await _ratingService.submitRating(
+        viajeId: widget.rideId,
+        taxistaId: taxistaId,
+        tipo: tipo,
+        motivo: motivo,
+        comentario: comentario,
+      );
+
+      if (!mounted) return;
+
+      if (result.success) {
+        setState(() {
+          _isRated = true;
+          _ratingInProgress = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('¡Valoración enviada! Gracias por tu feedback.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        setState(() => _ratingInProgress = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _ratingInProgress = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al enviar valoración: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  String? _resolveTaxistaId(Map<String, dynamic> detail) {
+    final directKeys = [
+      detail['taxista_id'],
+      detail['driver_id'],
+      detail['taxistaId'],
+      detail['driverId'],
+    ];
+
+    for (final value in directKeys) {
+      final id = value?.toString().trim();
+      if (id != null && id.isNotEmpty) {
+        return id;
+      }
+    }
+
+    final nestedDriver = detail['driver'];
+    if (nestedDriver is Map) {
+      final nestedId = nestedDriver['id']?.toString().trim();
+      if (nestedId != null && nestedId.isNotEmpty) {
+        return nestedId;
+      }
+    }
+
+    final nestedTaxista = detail['taxista'];
+    if (nestedTaxista is Map) {
+      final nestedId = nestedTaxista['id']?.toString().trim();
+      if (nestedId != null && nestedId.isNotEmpty) {
+        return nestedId;
+      }
+    }
+
+    return null;
+  }
+
   Widget _buildInfoTile({
     required IconData icon,
     required String label,
@@ -574,6 +1097,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
           final actualDuration = _formatActualDuration(detail);
           final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
           final isPaid = _isRidePaid(detail);
+          final isFinalized = state == 'finalizada';
 
           return ListView(
             padding: EdgeInsets.fromLTRB(
@@ -637,13 +1161,13 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                         _buildInfoTile(
                           icon: Icons.flight_takeoff_outlined,
                           label: 'Recogida',
-                          value: _formatDate(detail['fecha_recogida']),
+                          value: _formatDatabaseDate(detail['fecha_recogida']),
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
                           icon: Icons.flag_outlined,
                           label: 'Entrega',
-                          value: _formatDate(detail['fecha_entrega']),
+                          value: _formatDatabaseDate(detail['fecha_entrega']),
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
@@ -692,7 +1216,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                               : Icons.hourglass_empty_outlined,
                           iconColor: isPaid ? Colors.green : null,
                           label: 'Pago',
-                          value: isPaid ? 'Pagado' : 'Pendiente de pago',
+                          value: isPaid
+                              ? 'Pagado'
+                              : (isFinalized
+                                    ? 'Pagado al taxista'
+                                    : 'Pendiente de pago'),
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
@@ -735,7 +1263,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                               : Icons.hourglass_empty_outlined,
                           iconColor: isPaid ? Colors.green : null,
                           label: 'Pago',
-                          value: isPaid ? 'Pagado' : 'Pendiente de pago',
+                          value: isPaid
+                              ? 'Pagado'
+                              : (isFinalized
+                                    ? 'Pagado al taxista'
+                                    : 'Pendiente de pago'),
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
@@ -749,6 +1281,66 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                 ),
               ),
               if (!widget.isDriverView) ...[
+                if (state == 'confirmada' && _etaMinutes != null) ...[
+                  const SizedBox(height: 10),
+                  Card(
+                    color: colorScheme.primary.withValues(alpha: 0.08),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: BorderSide(
+                        color: colorScheme.primary.withValues(alpha: 0.5),
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.directions_car_filled_rounded,
+                            color: colorScheme.primary,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Tu taxista está en camino',
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Llega en aproximadamente ${_buildEtaCountdownText()}',
+                                  style: Theme.of(context).textTheme.bodyLarge,
+                                ),
+                                if (_etaDistanceKm != null) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Distancia al origen: ${_etaDistanceKm!.toStringAsFixed(1)} km',
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodyMedium,
+                                  ),
+                                ],
+                                if (_etaUpdatedAt != null) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Última actualización de la ubicación: ${_buildLastUpdateText()}',
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 10),
                 Card(
                   shape: RoundedRectangleBorder(
@@ -768,6 +1360,92 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                         Text('Vehiculo: ${_buildVehicleName(detail)}'),
                       ],
                     ),
+                  ),
+                ),
+                if (state == 'confirmada' && _etaMinutes == null) ...[
+                  const SizedBox(height: 10),
+                  Card(
+                    color: colorScheme.primary.withValues(alpha: 0.08),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: BorderSide(
+                        color: colorScheme.primary.withValues(alpha: 0.35),
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.location_searching_outlined,
+                            color: colorScheme.primary,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Esperando que el taxista comparta su ubicación...',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+              if (!widget.isDriverView &&
+                  normalizeRideState(detail['estado']) == 'finalizada' &&
+                  !_isRated) ...[
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: _ratingInProgress
+                      ? null
+                      : () => _showRatingBottomSheet(detail),
+                  icon: _ratingInProgress
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.rate_review_outlined),
+                  label: Text(
+                    _ratingInProgress
+                        ? 'Enviando valoración...'
+                        : 'Valora tu viaje',
+                  ),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ],
+              if (!widget.isDriverView &&
+                  normalizeRideState(detail['estado']) == 'finalizada' &&
+                  _isRated) ...[
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.green.shade300),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.check_circle, color: Colors.green.shade600),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Valoración enviada',
+                          style: TextStyle(
+                            color: Colors.green.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
