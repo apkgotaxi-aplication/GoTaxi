@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:gotaxi/data/services/taxista_service.dart';
+import 'package:gotaxi/data/services/rating_service.dart';
+import 'package:gotaxi/models/rating_model.dart';
+import 'package:gotaxi/presentation/screens/home/taxista_ride_history_screen.dart';
+import 'package:gotaxi/utils/ratings/rating_utils.dart';
 
 class GestionarTaxistasScreen extends StatefulWidget {
   const GestionarTaxistasScreen({super.key});
@@ -321,22 +325,25 @@ class _TaxistaDetailScreen extends StatefulWidget {
 
 class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
   final _taxistaService = TaxistaService();
-  final _rideSearchController = TextEditingController();
+  final _ratingService = RatingService();
 
   late Future<List<Map<String, dynamic>>> _ridesFuture;
+  late Future<TaxistaRatingsSummary> _ratingsSummaryFuture;
   bool _deleting = false;
-  String _rideSearchQuery = '';
 
   @override
   void initState() {
     super.initState();
     final taxistaId = widget.taxista['id'] as String;
-    _ridesFuture = _taxistaService.getTaxistaRideHistory(taxistaId: taxistaId);
+    _ridesFuture = _taxistaService.getTaxistaRideHistory(
+      taxistaId: taxistaId,
+      limit: 5,
+    );
+    _ratingsSummaryFuture = _ratingService.getTaxistaRatingsSummary(taxistaId);
   }
 
   @override
   void dispose() {
-    _rideSearchController.dispose();
     super.dispose();
   }
 
@@ -345,6 +352,10 @@ class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
     setState(() {
       _ridesFuture = _taxistaService.getTaxistaRideHistory(
         taxistaId: taxistaId,
+        limit: 5,
+      );
+      _ratingsSummaryFuture = _ratingService.getTaxistaRatingsSummary(
+        taxistaId,
       );
     });
     await _ridesFuture;
@@ -547,34 +558,202 @@ class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
               ],
             ),
             const SizedBox(height: 16),
+            FutureBuilder<TaxistaRatingsSummary>(
+              future: _ratingsSummaryFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const SizedBox(
+                    height: 100,
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+
+                if (snapshot.hasError || snapshot.data == null) {
+                  return const SizedBox.shrink();
+                }
+
+                final summary = snapshot.data!;
+                final incidentPercentageStr =
+                    RatingUtils.formatIncidentPercentage(
+                      summary.incidentPercentage,
+                    );
+                final isHighRate = RatingUtils.isHighIncidentRate(
+                  summary.incidentPercentage,
+                );
+
+                return _DetailSection(
+                  title: '📊 Valoraciones',
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade900,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Colors.grey.shade700),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                '${summary.totalRatings} valoraciones totales',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isHighRate
+                                      ? Colors.red.shade400
+                                      : Colors.green.shade400,
+                                  borderRadius: BorderRadius.circular(99),
+                                ),
+                                child: Text(
+                                  incidentPercentageStr,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  children: [
+                                    Text(
+                                      '${summary.positiveCount}',
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.green.shade200,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Positivas ✓',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(color: Colors.white70),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  children: [
+                                    Text(
+                                      '${summary.negativeCount}',
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.red.shade200,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Negativas ✗',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(color: Colors.white70),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (summary.recentIncidents.isNotEmpty) ...[
+                            const SizedBox(height: 12),
+                            const Divider(),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Últimas incidencias:',
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: Colors.white70),
+                            ),
+                            const SizedBox(height: 8),
+                            ...summary.recentIncidents
+                                .take(3)
+                                .map(
+                                  (incident) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(8),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red.shade900,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: Colors.red.shade300,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            incident.motivo ?? 'Sin motivo',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 12,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                          if (incident.comentario != null) ...[
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              incident.comentario!,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall
+                                                  ?.copyWith(
+                                                    color: Colors.white70,
+                                                  ),
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            _formatIncidentDate(
+                                              incident.creadoEn,
+                                            ),
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  fontStyle: FontStyle.italic,
+                                                  color: Colors.white70,
+                                                ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+            const SizedBox(height: 16),
             _DetailSection(
               title: 'Viajes realizados',
               children: [
-                TextField(
-                  controller: _rideSearchController,
-                  onChanged: (value) {
-                    setState(
-                      () => _rideSearchQuery = value.trim().toLowerCase(),
-                    );
-                  },
-                  decoration: InputDecoration(
-                    hintText: 'Buscar viajes por origen, destino o estado',
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _rideSearchQuery.isEmpty
-                        ? null
-                        : IconButton(
-                            onPressed: () {
-                              _rideSearchController.clear();
-                              setState(() => _rideSearchQuery = '');
-                            },
-                            icon: const Icon(Icons.clear),
-                          ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
                 FutureBuilder<List<Map<String, dynamic>>>(
                   future: _ridesFuture,
                   builder: (context, snapshot) {
@@ -612,22 +791,6 @@ class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
                     }
 
                     final rides = snapshot.data ?? const [];
-                    final filteredRides = rides.where((ride) {
-                      if (_rideSearchQuery.isEmpty) return true;
-
-                      final searchableFields = [
-                        ride['origen'],
-                        ride['destino'],
-                        ride['estado'],
-                        ride['ciudad_origen'],
-                        ride['precio']?.toString(),
-                      ];
-
-                      return searchableFields.any(
-                        (field) => (field?.toString().toLowerCase() ?? '')
-                            .contains(_rideSearchQuery),
-                      );
-                    }).toList();
 
                     if (rides.isEmpty) {
                       return Padding(
@@ -639,20 +802,34 @@ class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
                       );
                     }
 
-                    if (filteredRides.isEmpty) {
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        child: Text(
-                          'No hay viajes que coincidan con la busqueda.',
-                          style: TextStyle(color: colorScheme.outline),
-                        ),
-                      );
-                    }
+                    final latestFive = rides.take(5).toList();
 
                     return Column(
-                      children: filteredRides
-                          .map((ride) => _RideCard(ride: ride))
-                          .toList(),
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        ...latestFive.map((ride) => _RideCard(ride: ride)),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => TaxistaRideHistoryScreen(
+                                  taxistaId: widget.taxista['id'] as String,
+                                  taxistaName:
+                                      '${nombre.trim()} ${apellidos.trim()}'
+                                          .trim()
+                                          .isEmpty
+                                      ? 'Taxista'
+                                      : '${nombre.trim()} ${apellidos.trim()}'
+                                            .trim(),
+                                ),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.list_alt_outlined),
+                          label: const Text('Ver todos'),
+                        ),
+                      ],
                     );
                   },
                 ),
@@ -685,6 +862,23 @@ class _TaxistaDetailScreenState extends State<_TaxistaDetailScreen> {
         ),
       ),
     );
+  }
+
+  String _formatIncidentDate(DateTime date) {
+    final now = DateTime.now();
+    final difference = now.difference(date);
+
+    if (difference.inMinutes < 60) {
+      return 'Hace ${difference.inMinutes} minutos';
+    } else if (difference.inHours < 24) {
+      return 'Hace ${difference.inHours} horas';
+    } else if (difference.inDays < 7) {
+      return 'Hace ${difference.inDays} días';
+    } else {
+      final day = date.day.toString().padLeft(2, '0');
+      final month = date.month.toString().padLeft(2, '0');
+      return '$day/$month';
+    }
   }
 
   String _buildInitials(String nombre, String apellidos) {

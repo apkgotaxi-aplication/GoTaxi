@@ -481,6 +481,29 @@ class TaxistaService {
     );
   }
 
+  Future<TaxistaActionResult> updateDriverLocation({
+    required double lat,
+    required double lng,
+  }) async {
+    final raw = await _supabase.rpc(
+      'update_driver_location',
+      params: {'p_lat': lat, 'p_lng': lng},
+    );
+
+    if (raw is List && raw.isNotEmpty) {
+      return TaxistaActionResult.fromMap(Map<String, dynamic>.from(raw.first));
+    }
+
+    if (raw is Map) {
+      return TaxistaActionResult.fromMap(Map<String, dynamic>.from(raw));
+    }
+
+    return const TaxistaActionResult(
+      success: false,
+      message: 'No se pudo actualizar la ubicacion.',
+    );
+  }
+
   Future<TaxistaActionResult> confirmRideByDriver({required String viajeId}) {
     return _runDriverRideAction(
       'confirm_ride_by_driver',

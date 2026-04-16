@@ -77,7 +77,7 @@ class StripePaymentService {
       throw StateError('Debes iniciar sesion para ver tus metodos de pago.');
     }
 
-    final response = await _supabase
+    final localResponse = await _supabase
         .from('cliente_metodos_pago')
         .select(
           'stripe_payment_method_id, brand, last4, exp_month, exp_year, is_default',
@@ -86,9 +86,45 @@ class StripePaymentService {
         .order('is_default', ascending: false)
         .order('created_at', ascending: false);
 
-    return List<Map<String, dynamic>>.from(
-      response,
+    final localMethods = List<Map<String, dynamic>>.from(
+      localResponse,
     ).map(StripePaymentMethodSummary.fromMap).toList();
+
+    if (localMethods.isNotEmpty) {
+      return localMethods;
+    }
+
+    final syncedMethods = await syncMyPaymentMethods();
+    if (syncedMethods.isNotEmpty) {
+      return syncedMethods;
+    }
+
+    return localMethods;
+  }
+
+  Future<List<StripePaymentMethodSummary>> syncMyPaymentMethods() async {
+    final session = await _ensureFreshSession();
+    if (session == null) {
+      throw StateError('Debes iniciar sesion para continuar.');
+    }
+
+    final response = await _invokeStripeFunction({
+      'action': 'sync_payment_methods',
+    }, accessToken: session.accessToken);
+
+    final methods = response['methods'];
+    if (methods is List) {
+      return methods
+          .whereType<Map>()
+          .map(
+            (method) => StripePaymentMethodSummary.fromMap(
+              Map<String, dynamic>.from(method),
+            ),
+          )
+          .toList();
+    }
+
+    return const [];
   }
 
   Future<StripeCheckoutResult> createPaymentMethodSetupSession() async {
@@ -145,12 +181,7 @@ class StripePaymentService {
       return null;
     }
 
-    try {
-      final refreshed = await _supabase.auth.refreshSession();
-      return refreshed.session ?? currentSession;
-    } catch (_) {
-      return currentSession;
-    }
+    return currentSession;
   }
 
   Future<Map<String, dynamic>> _invokeStripeFunction(
@@ -229,7 +260,9 @@ class StripePaymentService {
 
   Future<void> openCheckoutUrl(String checkoutUrl) async {
     final uri = Uri.parse(checkoutUrl);
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    final opened =
+        await launchUrl(uri, mode: LaunchMode.externalApplication) ||
+        await launchUrl(uri, mode: LaunchMode.platformDefault);
 
     if (!opened) {
       throw StateError('No se pudo abrir la pagina de pago.');
