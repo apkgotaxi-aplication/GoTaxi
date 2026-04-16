@@ -8,11 +8,14 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
 import 'package:gotaxi/data/services/tarifa_service.dart';
+import 'package:gotaxi/data/services/favorites_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:gotaxi/utils/places_autocomplete_service.dart';
 
 class MapTab extends StatefulWidget {
-  const MapTab({super.key});
+  const MapTab({super.key, this.onRideRequested});
+
+  final ValueChanged<String>? onRideRequested;
 
   @override
   State<MapTab> createState() => _MapTabState();
@@ -26,6 +29,7 @@ class _MapTabState extends State<MapTab> {
   late PlacesAutocompleteService _placesService;
   final RideService _rideService = RideService();
   final TarifaService _tarifaService = TarifaService();
+  final FavoritesService _favoritesService = FavoritesService();
 
   GoogleMapController? _mapController;
   LatLng? _currentPosition;
@@ -35,6 +39,7 @@ class _MapTabState extends State<MapTab> {
     text: _defaultOriginText,
   );
   final TextEditingController _destinationController = TextEditingController();
+  final TextEditingController _annotationController = TextEditingController();
   final Set<Marker> _markers = <Marker>{};
   final Set<Polyline> _polylines = <Polyline>{};
 
@@ -59,6 +64,11 @@ class _MapTabState extends State<MapTab> {
   Timer? _originDebounce;
   Timer? _destinationDebounce;
 
+  // Favorites state
+  List<FavoriteLocation> _favorites = [];
+  static const int _maxVisibleFavorites = 4;
+  static const int _maxFavoriteNameLength = 15;
+
   // ubicación por defecto
   static const LatLng _defaultPosition = LatLng(40.4168, -3.7038);
 
@@ -66,6 +76,7 @@ class _MapTabState extends State<MapTab> {
   void dispose() {
     _originController.dispose();
     _destinationController.dispose();
+    _annotationController.dispose();
     _mapController?.dispose();
     _originDebounce?.cancel();
     _destinationDebounce?.cancel();
@@ -79,6 +90,7 @@ class _MapTabState extends State<MapTab> {
     _originController.addListener(_onOriginChanged);
     _destinationController.addListener(_onDestinationChanged);
     _determinePosition();
+    _loadFavorites();
   }
 
   void _onOriginChanged() {
@@ -93,6 +105,287 @@ class _MapTabState extends State<MapTab> {
     _destinationDebounce = Timer(const Duration(milliseconds: 400), () {
       _fetchDestinationSuggestions(_destinationController.text);
     });
+  }
+
+  Future<void> _loadFavorites() async {
+    try {
+      final favorites = await _favoritesService.getMyFavorites();
+      if (mounted) {
+        setState(() {
+          _favorites = favorites;
+        });
+      }
+    } catch (e) {
+      // Silently handle errors, just don't load favorites
+    }
+  }
+
+  List<FavoriteLocation> get _visibleFavorites {
+    return _favorites
+        .where((favorite) => favorite.visibleEnMapa)
+        .take(_maxVisibleFavorites)
+        .toList();
+  }
+
+  IconData _favoriteIcon(FavoriteLocation favorite) {
+    if (favorite.tipo == 'casa') return Icons.home;
+    if (favorite.tipo == 'trabajo') return Icons.work;
+    return Icons.place;
+  }
+
+  String _favoriteDisplayName(FavoriteLocation favorite) {
+    if (favorite.tipo == 'casa') return 'Casa';
+    if (favorite.tipo == 'trabajo') return 'Trabajo';
+    return favorite.nombre;
+  }
+
+  void _setFavoriteAsOrigin(FavoriteLocation favorite) {
+    _originDebounce?.cancel();
+    _originController.removeListener(_onOriginChanged);
+    _originController.text = favorite.direccion;
+    _lastOrigin = LatLng(favorite.latitud, favorite.longitud);
+    _originController.addListener(_onOriginChanged);
+    setState(() {
+      _originSuggestions = [];
+    });
+  }
+
+  void _setFavoriteAsDestination(FavoriteLocation favorite) {
+    _destinationDebounce?.cancel();
+    _destinationController.removeListener(_onDestinationChanged);
+    _destinationController.text = favorite.direccion;
+    _lastDestination = LatLng(favorite.latitud, favorite.longitud);
+    _destinationController.addListener(_onDestinationChanged);
+    setState(() {
+      _destinationSuggestions = [];
+    });
+  }
+
+  void _applyFavoriteToEmptyField(FavoriteLocation favorite) {
+    final destinationText = _destinationController.text.trim();
+    final originText = _originController.text.trim();
+    final originIsDefault =
+        originText.toLowerCase() == _defaultOriginText.toLowerCase();
+
+    if (destinationText.isEmpty) {
+      _setFavoriteAsDestination(favorite);
+      return;
+    }
+
+    if (originText.isEmpty || originIsDefault) {
+      _setFavoriteAsOrigin(favorite);
+      return;
+    }
+
+    _setFavoriteAsDestination(favorite);
+  }
+
+  Future<void> _saveFavorite({
+    required String field,
+    required String type,
+    String? customName,
+    required bool visibleOnMap,
+  }) async {
+    final isOrigin = field == 'origin';
+    final address = isOrigin
+        ? _originController.text.trim()
+        : _destinationController.text.trim();
+
+    if (address.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Selecciona una ubicación válida primero'),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (type == 'otro' && (customName == null || customName.trim().isEmpty)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Para "otro" debes indicar un nombre.')),
+        );
+      }
+      return;
+    }
+
+    if (type == 'otro' && customName!.trim().length > _maxFavoriteNameLength) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'El nombre del favorito no puede superar $_maxFavoriteNameLength caracteres.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (visibleOnMap && _visibleFavorites.length >= _maxVisibleFavorites) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Solo puedes tener 4 favoritos visibles.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    final resolvedPoint = await _resolvePointFromText(
+      address,
+      isOrigin: isOrigin,
+    );
+
+    final favoriteName = type == 'casa'
+        ? 'Casa'
+        : type == 'trabajo'
+        ? 'Trabajo'
+        : customName!.trim();
+
+    try {
+      final success = await _favoritesService.addFavorite(
+        nombre: favoriteName,
+        latitud: resolvedPoint.latitude,
+        longitud: resolvedPoint.longitude,
+        direccion: address,
+        tipo: type,
+        visibleEnMapa: visibleOnMap,
+      );
+
+      if (mounted) {
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Favorito "$favoriteName" guardado')),
+          );
+          _loadFavorites();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Error al guardar el favorito')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: ${e.toString()}')));
+      }
+    }
+  }
+
+  void _openFavoritesSheet(String field) {
+    String type = 'casa';
+    String customName = '';
+    bool visibleOnMap = true;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                  bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Favoritos',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        initialValue: type,
+                        decoration: const InputDecoration(
+                          labelText: 'Tipo de ubicación',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 'casa', child: Text('Casa')),
+                          DropdownMenuItem(
+                            value: 'trabajo',
+                            child: Text('Trabajo'),
+                          ),
+                          DropdownMenuItem(value: 'otro', child: Text('Otro')),
+                        ],
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setModalState(() {
+                            type = value;
+                          });
+                        },
+                      ),
+                      if (type == 'otro') ...[
+                        const SizedBox(height: 12),
+                        TextField(
+                          maxLength: _maxFavoriteNameLength,
+                          decoration: InputDecoration(
+                            labelText: 'Nombre del favorito',
+                            hintText: 'Ej: Gimnasio',
+                            border: const OutlineInputBorder(),
+                            helperText:
+                                'Máximo $_maxFavoriteNameLength caracteres',
+                          ),
+                          onChanged: (value) {
+                            customName = value;
+                          },
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      SwitchListTile.adaptive(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Mostrar en lista visible del mapa'),
+                        subtitle: Text(
+                          'Máximo $_maxVisibleFavorites visibles (actual: ${_visibleFavorites.length})',
+                        ),
+                        value: visibleOnMap,
+                        onChanged: (value) {
+                          setModalState(() {
+                            visibleOnMap = value;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: () async {
+                            await _saveFavorite(
+                              field: field,
+                              type: type,
+                              customName: customName,
+                              visibleOnMap: visibleOnMap,
+                            );
+                            if (!context.mounted) return;
+                            Navigator.of(context).pop();
+                          },
+                          child: const Text('Guardar ubicación actual'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _fetchOriginSuggestions(String input) async {
@@ -404,6 +697,8 @@ class _MapTabState extends State<MapTab> {
   Future<void> _createRide({required bool isReservation}) async {
     if (_loadingRoute || _requestingRide) return;
 
+    FocusScope.of(context).unfocus();
+
     if (_distanceMeters == null ||
         _durationSeconds == null ||
         _estimatedFareEur == null) {
@@ -417,6 +712,7 @@ class _MapTabState extends State<MapTab> {
     final distanceMeters = _distanceMeters;
     final durationSeconds = _durationSeconds;
     final fare = _estimatedFareEur;
+    final anotaciones = _annotationController.text.trim();
 
     if (origin == null ||
         destination == null ||
@@ -446,7 +742,7 @@ class _MapTabState extends State<MapTab> {
             : _originController.text.trim(),
         destino: _destinationController.text.trim(),
         numPasajeros: 1,
-        anotaciones: '',
+        anotaciones: anotaciones,
         distanciaKm: distanciaKm,
         precio: fare,
         duracionMin: duracionMinutos,
@@ -462,6 +758,11 @@ class _MapTabState extends State<MapTab> {
       final color = result.success
           ? Theme.of(context).colorScheme.primary
           : Theme.of(context).colorScheme.error;
+
+      if (result.success && !isReservation && widget.onRideRequested != null) {
+        widget.onRideRequested!(result.message);
+        return;
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(result.message), backgroundColor: color),
@@ -618,6 +919,11 @@ class _MapTabState extends State<MapTab> {
                             ),
                           ),
                         ),
+                        IconButton(
+                          icon: const Icon(Icons.star),
+                          onPressed: () => _openFavoritesSheet('origin'),
+                          tooltip: 'Favoritos',
+                        ),
                       ],
                     ),
                     if (_showOriginSuggestions) ...[
@@ -717,8 +1023,35 @@ class _MapTabState extends State<MapTab> {
                             ),
                           ),
                         ),
+                        IconButton(
+                          icon: const Icon(Icons.star),
+                          onPressed: () => _openFavoritesSheet('destination'),
+                          tooltip: 'Favoritos',
+                        ),
                       ],
                     ),
+                    if (_visibleFavorites.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _visibleFavorites.map((favorite) {
+                            return ActionChip(
+                              avatar: Icon(
+                                _favoriteIcon(favorite),
+                                size: 18,
+                                color: theme.colorScheme.primary,
+                              ),
+                              label: Text(_favoriteDisplayName(favorite)),
+                              onPressed: () =>
+                                  _applyFavoriteToEmptyField(favorite),
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ],
                     if (_showDestinationSuggestions) ...[
                       Container(
                         constraints: const BoxConstraints(maxHeight: 200),
@@ -857,6 +1190,20 @@ class _MapTabState extends State<MapTab> {
                       ],
                     ),
                   ],
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _annotationController,
+                    maxLines: 3,
+                    textInputAction: TextInputAction.done,
+                    decoration: InputDecoration(
+                      labelText: 'Anotaciones para el taxista (opcional)',
+                      hintText:
+                          'Ejemplo: portal 3, timbre 2B, acceso por rampa',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
                 ],
                 const SizedBox(height: 12),
                 if (_distanceText == null || _durationText == null) ...[

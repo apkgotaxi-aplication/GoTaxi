@@ -4,8 +4,12 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:gotaxi/presentation/screens/home/about_us_screen.dart';
 import 'package:gotaxi/presentation/screens/auth/auth_screen.dart';
 import 'package:gotaxi/presentation/screens/home/faq_screen.dart';
+import 'package:gotaxi/presentation/screens/home/ride_detail_screen.dart';
 import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
+import 'package:gotaxi/data/services/stripe_payment_service.dart';
+import 'package:gotaxi/data/services/favorites_service.dart';
 import 'package:gotaxi/presentation/fragments/profile/admin_panel_fragment.dart';
+import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 import '../../../../utils/profile/user_personal_data_utils.dart';
 
 class ProfileTab extends StatefulWidget {
@@ -16,6 +20,8 @@ class ProfileTab extends StatefulWidget {
 }
 
 class _ProfileTabState extends State<ProfileTab> {
+  static const int _maxVisibleFavorites = 4;
+
   final _supabase = Supabase.instance.client;
 
   final _nombreController = TextEditingController();
@@ -30,6 +36,9 @@ class _ProfileTabState extends State<ProfileTab> {
   bool _isAdmin = false;
   String? _error;
   String _userRole = '';
+  Map<String, dynamic>? _activeRide;
+  final StripePaymentService _stripePaymentService = StripePaymentService();
+  final FavoritesService _favoritesService = FavoritesService();
 
   @override
   void initState() {
@@ -42,6 +51,8 @@ class _ProfileTabState extends State<ProfileTab> {
       _loading = true;
       _error = null;
     });
+
+    Map<String, dynamic>? activeRide;
 
     try {
       final user = _supabase.auth.currentUser;
@@ -82,6 +93,8 @@ class _ProfileTabState extends State<ProfileTab> {
         if (clienteResponse != null) {
           _isAdmin = clienteResponse['is_admin'] == true;
         }
+
+        activeRide = await _fetchActiveRideForCliente();
       } else if (_userRole == 'taxista') {
         // Buscar is_admin en tabla taxistas
         final taxistaResponse = await _supabase
@@ -93,12 +106,66 @@ class _ProfileTabState extends State<ProfileTab> {
         if (taxistaResponse != null) {
           _isAdmin = taxistaResponse['is_admin'] == true;
         }
+
+        activeRide = null;
       }
     } catch (e) {
       _error = 'Error al cargar el perfil: $e';
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _activeRide = activeRide;
+          _loading = false;
+        });
+      }
     }
+  }
+
+  Future<Map<String, dynamic>?> _fetchActiveRideForCliente() async {
+    try {
+      final rides = await fetchCurrentUserRideHistory(limit: 50);
+      for (final ride in rides) {
+        final state = normalizeRideState(ride['estado']);
+        if (state != 'cancelada' && state != 'finalizada') {
+          return ride;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _isRideActive(Map<String, dynamic>? ride) {
+    if (ride == null) return false;
+    final state = normalizeRideState(ride['estado']);
+    return state != 'cancelada' && state != 'finalizada';
+  }
+
+  Future<void> _showActiveRideDetail() async {
+    final activeRide = _activeRide;
+    final rideId = activeRide?['id']?.toString();
+    if (activeRide == null || rideId == null || rideId.isEmpty) return;
+
+    final updatedRide = await Navigator.of(context).push<Map<String, dynamic>>(
+      MaterialPageRoute(
+        builder: (_) =>
+            RideDetailScreen(rideId: rideId, initialRide: activeRide),
+      ),
+    );
+
+    if (!mounted) return;
+
+    final refreshedActiveRide = await _fetchActiveRideForCliente();
+    if (!mounted) return;
+
+    setState(() {
+      if (updatedRide != null && _isRideActive(updatedRide)) {
+        _activeRide = {...(refreshedActiveRide ?? activeRide), ...updatedRide};
+      } else {
+        _activeRide = refreshedActiveRide;
+      }
+    });
   }
 
   Future<void> _saveProfile() async {
@@ -316,70 +383,307 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  void _showMisViajesSheet() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const RideHistoryScreen()));
+  Future<void> _showMisViajesSheet() async {
+    final initialTab = await _resolveHistoryInitialTab();
+    if (!mounted) return;
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RideHistoryScreen(initialTab: initialTab),
+      ),
+    );
+  }
+
+  Future<int> _resolveHistoryInitialTab() async {
+    if (_userRole == 'taxista') {
+      return 1;
+    }
+
+    if (_userRole.isNotEmpty) {
+      return 0;
+    }
+
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      return 0;
+    }
+
+    final response = await _supabase
+        .from('usuarios')
+        .select('rol')
+        .eq('id', user.id)
+        .maybeSingle();
+
+    return response != null && response['rol'] == 'taxista' ? 1 : 0;
   }
 
   void _showFavoritosSheet() {
     final colorScheme = Theme.of(context).colorScheme;
+    Future<List<FavoriteLocation>> favoritesFuture = _favoritesService
+        .getMyFavorites();
 
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: MediaQuery.of(context).size.height * 0.85,
-        decoration: BoxDecoration(
-          color: colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          children: [
-            Container(
-              margin: const EdgeInsets.only(top: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade400,
-                borderRadius: BorderRadius.circular(2),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) => Container(
+            height: MediaQuery.of(context).size.height * 0.85,
+            decoration: BoxDecoration(
+              color: colorScheme.surface,
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(24),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    'Mis favoritos',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            child: Column(
+              children: [
+                Container(
+                  margin: const EdgeInsets.only(top: 12),
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade400,
+                    borderRadius: BorderRadius.circular(2),
                   ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-            ),
-            const Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.star, size: 64, color: Colors.grey),
-                    SizedBox(height: 16),
-                    Text(
-                      'No tienes favoritos guardados',
-                      style: TextStyle(fontSize: 16, color: Colors.grey),
-                    ),
-                  ],
                 ),
-              ),
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Mis favoritos',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: FutureBuilder<List<FavoriteLocation>>(
+                    future: favoritesFuture,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+
+                      if (snapshot.hasError) {
+                        return Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              'No se pudieron cargar tus favoritos.\n${snapshot.error}',
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        );
+                      }
+
+                      final favorites = snapshot.data ?? const [];
+                      final visibleCount = favorites
+                          .where((f) => f.visibleEnMapa)
+                          .length;
+
+                      if (favorites.isEmpty) {
+                        return const Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.star, size: 64, color: Colors.grey),
+                              SizedBox(height: 16),
+                              Text(
+                                'No tienes favoritos guardados',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.grey,
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+
+                      final activeFavorites = favorites
+                          .where((favorite) => favorite.visibleEnMapa)
+                          .toList();
+                      final inactiveFavorites = favorites
+                          .where((favorite) => !favorite.visibleEnMapa)
+                          .toList();
+
+                      return ListView(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                        children: [
+                          Card(
+                            color: colorScheme.surfaceContainerHighest,
+                            child: Padding(
+                              padding: const EdgeInsets.all(14),
+                              child: Text(
+                                'Activos en mapa: $visibleCount/$_maxVisibleFavorites. Pulsa el ojo para activar/desactivar.',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          if (activeFavorites.isNotEmpty)
+                            const Padding(
+                              padding: EdgeInsets.only(bottom: 8),
+                              child: Text(
+                                'Activos',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ),
+                          ...activeFavorites.map((favorite) {
+                            final icon = favorite.tipo == 'casa'
+                                ? Icons.home
+                                : favorite.tipo == 'trabajo'
+                                ? Icons.work
+                                : Icons.place;
+
+                            final title = favorite.tipo == 'casa'
+                                ? 'Casa'
+                                : favorite.tipo == 'trabajo'
+                                ? 'Trabajo'
+                                : favorite.nombre;
+
+                            return Card(
+                              child: ListTile(
+                                leading: Icon(icon),
+                                title: Text(title),
+                                subtitle: Text(
+                                  favorite.direccion,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.visibility),
+                                  tooltip: 'Visible en mapa',
+                                  onPressed: () async {
+                                    try {
+                                      await _favoritesService.updateFavorite(
+                                        favoriteId: favorite.id,
+                                        visibleEnMapa: false,
+                                      );
+
+                                      setModalState(() {
+                                        favoritesFuture = _favoritesService
+                                            .getMyFavorites();
+                                      });
+                                    } catch (e) {
+                                      if (!context.mounted) return;
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(content: Text(e.toString())),
+                                      );
+                                    }
+                                  },
+                                ),
+                              ),
+                            );
+                          }),
+                          if (inactiveFavorites.isNotEmpty)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 8, bottom: 8),
+                              child: Text(
+                                'No activos',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ),
+                          ...inactiveFavorites.map((favorite) {
+                            final icon = favorite.tipo == 'casa'
+                                ? Icons.home
+                                : favorite.tipo == 'trabajo'
+                                ? Icons.work
+                                : Icons.place;
+
+                            final title = favorite.tipo == 'casa'
+                                ? 'Casa'
+                                : favorite.tipo == 'trabajo'
+                                ? 'Trabajo'
+                                : favorite.nombre;
+
+                            return Card(
+                              child: ListTile(
+                                leading: Icon(icon),
+                                title: Text(title),
+                                subtitle: Text(
+                                  favorite.direccion,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                trailing: IconButton(
+                                  icon: Icon(
+                                    favorite.visibleEnMapa
+                                        ? Icons.visibility
+                                        : Icons.visibility_off,
+                                  ),
+                                  tooltip: favorite.visibleEnMapa
+                                      ? 'Visible en mapa'
+                                      : 'No visible en mapa',
+                                  onPressed: () async {
+                                    final wantsToEnable =
+                                        !favorite.visibleEnMapa;
+
+                                    if (wantsToEnable &&
+                                        visibleCount >= _maxVisibleFavorites) {
+                                      if (!context.mounted) return;
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Solo puedes tener 4 favoritos activos.',
+                                          ),
+                                        ),
+                                      );
+                                      return;
+                                    }
+
+                                    try {
+                                      await _favoritesService.updateFavorite(
+                                        favoriteId: favorite.id,
+                                        visibleEnMapa: wantsToEnable,
+                                      );
+
+                                      setModalState(() {
+                                        favoritesFuture = _favoritesService
+                                            .getMyFavorites();
+                                      });
+                                    } catch (e) {
+                                      if (!context.mounted) return;
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(content: Text(e.toString())),
+                                      );
+                                    }
+                                  },
+                                ),
+                              ),
+                            );
+                          }),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
@@ -423,19 +727,124 @@ class _ProfileTabState extends State<ProfileTab> {
                 ],
               ),
             ),
-            const Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.credit_card, size: 64, color: Colors.grey),
-                    SizedBox(height: 16),
-                    Text(
-                      'No tienes métodos de pago guardados',
-                      style: TextStyle(fontSize: 16, color: Colors.grey),
-                    ),
-                  ],
-                ),
+            Expanded(
+              child: FutureBuilder<List<StripePaymentMethodSummary>>(
+                future: _stripePaymentService.listMyPaymentMethods(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          'No se pudieron cargar tus métodos de pago.\n${snapshot.error}',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    );
+                  }
+
+                  final methods = snapshot.data ?? const [];
+
+                  return ListView(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                    children: [
+                      Card(
+                        color: colorScheme.surfaceContainerHighest,
+                        child: const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text(
+                            'Guardamos solo IDs y metadatos de Stripe. No almacenamos datos sensibles de la tarjeta.',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (methods.isEmpty)
+                        const Card(
+                          child: Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(
+                                  Icons.credit_card,
+                                  size: 48,
+                                  color: Colors.grey,
+                                ),
+                                SizedBox(height: 12),
+                                Text('No tienes métodos de pago guardados'),
+                              ],
+                            ),
+                          ),
+                        )
+                      else
+                        ...methods.map(
+                          (method) => Card(
+                            child: ListTile(
+                              leading: Icon(
+                                method.isDefault
+                                    ? Icons.verified_user_outlined
+                                    : Icons.credit_card_outlined,
+                              ),
+                              title: Text(method.label),
+                              subtitle: Text(
+                                method.isDefault
+                                    ? 'Método predeterminado'
+                                    : 'Método guardado en Stripe',
+                              ),
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: () async {
+                          try {
+                            final result = await _stripePaymentService
+                                .createPaymentMethodSetupSession();
+
+                            if (!context.mounted) return;
+
+                            if (!result.success || result.checkoutUrl == null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(result.message),
+                                  backgroundColor: colorScheme.error,
+                                ),
+                              );
+                              return;
+                            }
+
+                            await _stripePaymentService.openCheckoutUrl(
+                              result.checkoutUrl!,
+                            );
+
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Se ha abierto Stripe para guardar tu método de pago.',
+                                ),
+                              ),
+                            );
+                          } catch (e) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(e.toString()),
+                                backgroundColor: colorScheme.error,
+                              ),
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.add_card_outlined),
+                        label: const Text('Añadir método de pago'),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ],
@@ -685,6 +1094,13 @@ class _ProfileTabState extends State<ProfileTab> {
     }
 
     final viajesItems = [
+      if (_isCliente && _isRideActive(_activeRide))
+        _MenuItem(
+          icon: Icons.local_taxi,
+          title: 'Viaje en curso',
+          color: Colors.deepOrange,
+          onTap: _showActiveRideDetail,
+        ),
       _MenuItem(
         icon: Icons.directions_car,
         title: 'Historial de viajes',

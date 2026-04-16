@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:gotaxi/data/services/app_links_service.dart';
 import './presentation/screens/auth/auth_screen.dart';
 import './presentation/screens/home/home_screen.dart';
 import './data/services/notification_service.dart';
@@ -20,6 +21,7 @@ void main() async {
 
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
   await NotificationService().initialize();
+  await AppLinksService.instance.initialize();
 
   runApp(const MyApp());
 }

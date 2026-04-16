@@ -10,6 +10,10 @@ bool isRideCancelable(dynamic rawState) {
   return kCancelableRideStates.contains(normalizeRideState(rawState));
 }
 
+bool normalizeRidePaymentStatus(dynamic rawValue) {
+  return rawValue == true || rawValue?.toString().toLowerCase() == 'true';
+}
+
 Future<List<Map<String, dynamic>>> fetchCurrentUserRideHistory({
   int limit = 50,
 }) async {
@@ -27,7 +31,11 @@ Future<List<Map<String, dynamic>>> fetchCurrentUserRideHistory({
 
   return List<Map<String, dynamic>>.from(response).map((ride) {
     final state = normalizeRideState(ride['estado']);
-    return {...ride, 'estado': state};
+    return {
+      ...ride,
+      'estado': state,
+      'pagado': normalizeRidePaymentStatus(ride['pagado']),
+    };
   }).toList();
 }
 
@@ -48,7 +56,11 @@ Future<List<Map<String, dynamic>>> fetchCurrentUserDriverRideHistory({
 
   return List<Map<String, dynamic>>.from(response).map((ride) {
     final state = normalizeRideState(ride['estado']);
-    return {...ride, 'estado': state};
+    return {
+      ...ride,
+      'estado': state,
+      'pagado': normalizeRidePaymentStatus(ride['pagado']),
+    };
   }).toList();
 }
 
@@ -69,7 +81,38 @@ Future<Map<String, dynamic>> fetchCurrentUserRideDetail({
 
   if (response is List && response.isNotEmpty) {
     final detail = Map<String, dynamic>.from(response.first as Map);
-    return {...detail, 'estado': normalizeRideState(detail['estado'])};
+    return {
+      ...detail,
+      'estado': normalizeRideState(detail['estado']),
+      'pagado': normalizeRidePaymentStatus(detail['pagado']),
+    };
+  }
+
+  throw StateError('No se encontro el detalle del viaje solicitado.');
+}
+
+Future<Map<String, dynamic>> fetchCurrentUserDriverRideDetail({
+  required String rideId,
+}) async {
+  final supabase = Supabase.instance.client;
+  final currentUser = supabase.auth.currentUser;
+
+  if (currentUser == null) {
+    throw StateError('No hay una cuenta iniciada para consultar este viaje.');
+  }
+
+  final response = await supabase.rpc(
+    'get_driver_ride_detail',
+    params: {'p_viaje_id': rideId, 'p_driver_id': currentUser.id},
+  );
+
+  if (response is List && response.isNotEmpty) {
+    final detail = Map<String, dynamic>.from(response.first as Map);
+    return {
+      ...detail,
+      'estado': normalizeRideState(detail['estado']),
+      'pagado': normalizeRidePaymentStatus(detail['pagado']),
+    };
   }
 
   throw StateError('No se encontro el detalle del viaje solicitado.');

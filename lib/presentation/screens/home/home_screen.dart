@@ -65,6 +65,24 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _openProfileWithMessage(String message) {
+    if (!mounted) return;
+
+    setState(() {
+      _currentIndex = 1;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Theme.of(context).colorScheme.primary,
+        ),
+      );
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loadingRole) {
@@ -73,7 +91,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final tabs = _isTaxista
         ? const [DriverDashboardTab(), ProfileTab()]
-        : const [MapTab(), ProfileTab()];
+        : [
+            MapTab(onRideRequested: _openProfileWithMessage),
+            const ProfileTab(),
+          ];
 
     return Scaffold(
       resizeToAvoidBottomInset: _currentIndex != 0,

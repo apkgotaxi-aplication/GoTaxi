@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:gotaxi/data/services/app_links_service.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
+import 'package:gotaxi/data/services/stripe_payment_service.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 
 class RideDetailScreen extends StatefulWidget {
@@ -7,30 +11,243 @@ class RideDetailScreen extends StatefulWidget {
     super.key,
     required this.rideId,
     required this.initialRide,
+    this.isDriverView = false,
   });
 
   final String rideId;
   final Map<String, dynamic> initialRide;
+  final bool isDriverView;
 
   @override
   State<RideDetailScreen> createState() => _RideDetailScreenState();
 }
 
-class _RideDetailScreenState extends State<RideDetailScreen> {
+class _RideDetailScreenState extends State<RideDetailScreen>
+    with WidgetsBindingObserver {
   final RideService _rideService = RideService();
+  final StripePaymentService _stripePaymentService = StripePaymentService();
 
   late Future<Map<String, dynamic>> _detailFuture;
   bool _isCancelling = false;
+  bool _isPaying = false;
+  bool _waitingStripeReturn = false;
+  bool _checkingPaymentStatus = false;
+  bool _optimisticPaidUntilSync = false;
+  StreamSubscription<Uri>? _deepLinkSubscription;
+  String? _pendingCheckoutSessionId;
 
   @override
   void initState() {
     super.initState();
-    _detailFuture = fetchCurrentUserRideDetail(rideId: widget.rideId);
+    WidgetsBinding.instance.addObserver(this);
+    _detailFuture = _fetchRideDetail();
+    unawaited(_tryAutoSyncPendingPayment());
+    _deepLinkSubscription = AppLinksService.instance.uriStream.listen(
+      _handleStripeDeepLink,
+    );
+  }
+
+  @override
+  void dispose() {
+    _deepLinkSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  void _handleStripeDeepLink(Uri uri) {
+    if (uri.scheme != 'gotaxi' || uri.host != 'stripe') return;
+
+    final isSuccess = uri.path.contains('success');
+    final isCancel = uri.path.contains('cancel');
+    final sessionId = uri.queryParameters['session_id'];
+
+    if (!isSuccess && !isCancel) return;
+
+    if (isCancel) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pago cancelado en Stripe.')),
+      );
+      _optimisticPaidUntilSync = false;
+      _waitingStripeReturn = false;
+      _pendingCheckoutSessionId = null;
+      return;
+    }
+
+    _optimisticPaidUntilSync = true;
+    _pendingCheckoutSessionId = sessionId;
+    _waitingStripeReturn = true;
+    unawaited(_markRideAsPaidLocally());
+    unawaited(_checkPaymentAfterStripeReturn());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _waitingStripeReturn) {
+      unawaited(_checkPaymentAfterStripeReturn());
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      unawaited(
+        _tryAutoSyncPendingPayment(
+          checkoutSessionId: _pendingCheckoutSessionId,
+        ),
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>> _fetchRideDetail() {
+    return widget.isDriverView
+        ? fetchCurrentUserDriverRideDetail(rideId: widget.rideId)
+        : fetchCurrentUserRideDetail(rideId: widget.rideId);
+  }
+
+  bool _isRidePaidFromData(Map<String, dynamic> detail) {
+    if (detail['pagado'] == true) return true;
+    final stripeStatus = detail['stripe_payment_status']
+        ?.toString()
+        .toLowerCase()
+        .trim();
+    return stripeStatus == 'succeeded' ||
+        stripeStatus == 'successed' ||
+        stripeStatus == 'paid';
+  }
+
+  bool _isRidePaid(Map<String, dynamic> detail) {
+    return _optimisticPaidUntilSync || _isRidePaidFromData(detail);
+  }
+
+  Map<String, dynamic> _withOptimisticPaid(Map<String, dynamic> detail) {
+    if (!_optimisticPaidUntilSync || _isRidePaidFromData(detail)) {
+      return detail;
+    }
+
+    return Map<String, dynamic>.from(detail)
+      ..['pagado'] = true
+      ..['stripe_payment_status'] = 'succeeded';
+  }
+
+  Future<void> _checkPaymentAfterStripeReturn() async {
+    if (_checkingPaymentStatus) return;
+    _checkingPaymentStatus = true;
+
+    try {
+      for (var attempt = 0; attempt < 10; attempt++) {
+        if (!mounted) return;
+
+        try {
+          await _stripePaymentService.syncRidePaymentStatus(
+            rideId: widget.rideId,
+            checkoutSessionId: _pendingCheckoutSessionId,
+          );
+        } catch (_) {
+          // Si la sync falla, seguimos reintentando con la BD.
+        }
+
+        final latest = await _fetchRideDetail();
+        if (!mounted) return;
+
+        final confirmedPaid = _isRidePaidFromData(latest);
+        final displayDetail = _withOptimisticPaid(latest);
+
+        setState(() {
+          _detailFuture = Future<Map<String, dynamic>>.value(displayDetail);
+        });
+
+        if (confirmedPaid) {
+          _optimisticPaidUntilSync = false;
+          _waitingStripeReturn = false;
+          _pendingCheckoutSessionId = null;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Pago confirmado correctamente.')),
+          );
+          return;
+        }
+
+        if (attempt < 9) {
+          await Future<void>.delayed(const Duration(seconds: 2));
+        }
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Aun no se refleja el pago. Se actualizara automaticamente en breve.',
+          ),
+        ),
+      );
+    } catch (_) {
+      // Ignora errores transitorios de red al volver desde navegador.
+    } finally {
+      _checkingPaymentStatus = false;
+    }
+  }
+
+  Future<void> _tryAutoSyncPendingPayment({String? checkoutSessionId}) async {
+    if (widget.isDriverView || _checkingPaymentStatus) return;
+
+    try {
+      final current = await _fetchRideDetail();
+      if (!mounted) return;
+
+      final rideState = normalizeRideState(current['estado']);
+      final isPendingInProgress =
+          rideState == 'en_curso' && !_isRidePaidFromData(current);
+
+      if (!isPendingInProgress) {
+        setState(() {
+          _detailFuture = Future<Map<String, dynamic>>.value(current);
+        });
+        return;
+      }
+
+      try {
+        await _stripePaymentService.syncRidePaymentStatus(
+          rideId: widget.rideId,
+          checkoutSessionId: checkoutSessionId,
+        );
+      } catch (_) {
+        // Ignora errores transitorios y deja la UI con el estado más reciente disponible.
+      }
+
+      final refreshed = await _fetchRideDetail();
+      if (!mounted) return;
+
+      if (_isRidePaidFromData(refreshed)) {
+        _optimisticPaidUntilSync = false;
+      }
+
+      setState(() {
+        _detailFuture = Future<Map<String, dynamic>>.value(
+          _withOptimisticPaid(refreshed),
+        );
+      });
+    } catch (_) {
+      // No interrumpe la pantalla si la sync de fondo falla.
+    }
+  }
+
+  Future<void> _markRideAsPaidLocally() async {
+    try {
+      final current = await _detailFuture;
+      if (!mounted) return;
+
+      _optimisticPaidUntilSync = true;
+      final optimistic = _withOptimisticPaid(current);
+
+      setState(() {
+        _detailFuture = Future<Map<String, dynamic>>.value(optimistic);
+      });
+    } catch (_) {
+      // Si el detalle actual no está disponible aún, la sync remota actualizará la UI.
+    }
   }
 
   Future<void> _reload() async {
     setState(() {
-      _detailFuture = fetchCurrentUserRideDetail(rideId: widget.rideId);
+      _detailFuture = _fetchRideDetail();
     });
     await _detailFuture;
   }
@@ -56,6 +273,34 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
     return '${price.toStringAsFixed(2)} €';
   }
 
+  String _formatMinutes(dynamic rawValue) {
+    if (rawValue == null) return 'No disponible';
+    final minutes = int.tryParse(rawValue.toString());
+    if (minutes == null) return rawValue.toString();
+    if (minutes < 60) {
+      return '$minutes min';
+    }
+
+    final hours = minutes ~/ 60;
+    final remainingMinutes = minutes % 60;
+    if (remainingMinutes == 0) {
+      return '$hours h';
+    }
+
+    return '$hours h $remainingMinutes min';
+  }
+
+  String _formatActualDuration(Map<String, dynamic> detail) {
+    final start = DateTime.tryParse(detail['fecha_recogida']?.toString() ?? '');
+    final end = DateTime.tryParse(detail['fecha_entrega']?.toString() ?? '');
+
+    if (start == null || end == null || end.isBefore(start)) {
+      return 'No disponible';
+    }
+
+    return _formatMinutes(end.difference(start).inMinutes);
+  }
+
   String _buildDriverName(Map<String, dynamic> detail) {
     final nombre = detail['driver_nombre']?.toString().trim() ?? '';
     final apellidos = detail['driver_apellidos']?.toString().trim() ?? '';
@@ -68,6 +313,20 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
     final modelo = detail['vehiculo_modelo']?.toString().trim() ?? '';
     final composed = '$marca $modelo'.trim();
     return composed.isEmpty ? 'Vehiculo no disponible' : composed;
+  }
+
+  String _buildClientName(Map<String, dynamic> detail) {
+    final nombre = detail['cliente_nombre']?.toString().trim() ?? '';
+    final apellidos = detail['cliente_apellidos']?.toString().trim() ?? '';
+    final fullName = '$nombre $apellidos'.trim();
+    return fullName.isEmpty ? 'Sin cliente asignado' : fullName;
+  }
+
+  String _buildDriverLabel(Map<String, dynamic> detail) {
+    final nombre = detail['driver_nombre']?.toString().trim() ?? '';
+    final apellidos = detail['driver_apellidos']?.toString().trim() ?? '';
+    final fullName = '$nombre $apellidos'.trim();
+    return fullName.isEmpty ? 'Sin taxista asignado' : fullName;
   }
 
   Color _statusColor(String state, ColorScheme scheme) {
@@ -88,7 +347,7 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
   Future<void> _confirmAndCancelRide(Map<String, dynamic> detail) async {
     if (_isCancelling) return;
 
-    final canCancel = isRideCancelable(detail['estado']);
+    final canCancel = normalizeRideState(detail['estado']) == 'pendiente';
     if (!canCancel) return;
 
     final confirmed = await showDialog<bool>(
@@ -153,6 +412,110 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
     }
   }
 
+  Future<void> _payRide(Map<String, dynamic> detail) async {
+    if (_isPaying) return;
+
+    final state = normalizeRideState(detail['estado']);
+    final isPaid = _isRidePaid(detail);
+
+    if (isPaid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Este viaje ya está pagado.')),
+      );
+      return;
+    }
+
+    if (state != 'en_curso') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Solo puedes pagar viajes en curso.')),
+      );
+      return;
+    }
+
+    setState(() => _isPaying = true);
+    try {
+      final result = await _stripePaymentService.createRidePaymentSession(
+        rideId: widget.rideId,
+      );
+
+      if (!mounted) return;
+
+      if (!result.success || result.checkoutUrl == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+        return;
+      }
+
+      await _stripePaymentService.openCheckoutUrl(result.checkoutUrl!);
+      _pendingCheckoutSessionId = result.checkoutSessionId;
+      _waitingStripeReturn = true;
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Se abrio Stripe. Al volver, comprobaremos el estado del pago.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(e.toString().replaceFirst('StateError: ', '')),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isPaying = false);
+    }
+  }
+
+  Widget _buildInfoTile({
+    required IconData icon,
+    required String label,
+    required String value,
+    Color? iconColor,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: iconColor ?? colorScheme.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -205,13 +568,20 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
           final colorScheme = Theme.of(context).colorScheme;
           final statusColor = _statusColor(state, colorScheme);
 
-          final phone =
-              (detail['driver_telefono']?.toString().trim() ?? '').isEmpty
-              ? 'No disponible'
-              : detail['driver_telefono'].toString().trim();
+          final clientName = _buildClientName(detail);
+          final driverName = _buildDriverLabel(detail);
+          final estimatedDuration = _formatMinutes(detail['duracion']);
+          final actualDuration = _formatActualDuration(detail);
+          final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
+          final isPaid = _isRidePaid(detail);
 
           return ListView(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.fromLTRB(
+              16,
+              16,
+              16,
+              MediaQuery.of(context).padding.bottom + 32,
+            ),
             children: [
               Card(
                 shape: RoundedRectangleBorder(
@@ -257,81 +627,153 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                         ],
                       ),
                       const SizedBox(height: 12),
-                      Text('Solicitado: ${_formatDate(detail['created_at'])}'),
-                      Text(
-                        'Recogida: ${_formatDate(detail['fecha_recogida'])}',
-                      ),
-                      Text('Entrega: ${_formatDate(detail['fecha_entrega'])}'),
-                      const SizedBox(height: 8),
-                      Text('Origen: ${detail['origen'] ?? 'No disponible'}'),
-                      Text('Destino: ${detail['destino'] ?? 'No disponible'}'),
-                      const SizedBox(height: 8),
-                      Text('Precio: ${_formatPrice(detail['precio'])}'),
-                      Text(
-                        'Pasajeros: ${detail['num_pasajeros'] ?? 'No disponible'}',
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Card(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Taxista',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
+                      if (widget.isDriverView) ...[
+                        _buildInfoTile(
+                          icon: Icons.schedule_outlined,
+                          label: 'Solicitado',
+                          value: _formatDate(detail['created_at']),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text('Nombre: ${_buildDriverName(detail)}'),
-                      Text('Telefono: $phone'),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Card(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Vehiculo',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.flight_takeoff_outlined,
+                          label: 'Recogida',
+                          value: _formatDate(detail['fecha_recogida']),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text('Modelo: ${_buildVehicleName(detail)}'),
-                      Text(
-                        'Matricula: ${detail['vehiculo_matricula'] ?? 'No disponible'}',
-                      ),
-                      Text(
-                        'Licencia: ${detail['vehiculo_licencia_taxi'] ?? 'No disponible'}',
-                      ),
-                      Text(
-                        'Color: ${detail['vehiculo_color'] ?? 'No disponible'}',
-                      ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.flag_outlined,
+                          label: 'Entrega',
+                          value: _formatDate(detail['fecha_entrega']),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.people_outline,
+                          label: 'Pasajeros',
+                          value:
+                              detail['num_pasajeros']?.toString() ??
+                              'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.timer_outlined,
+                          label: 'Tiempo aproximado',
+                          value: estimatedDuration,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.av_timer_outlined,
+                          label: 'Tiempo final calculado',
+                          value: actualDuration,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.place_outlined,
+                          label: 'Origen',
+                          value:
+                              detail['origen']?.toString() ?? 'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.location_on_outlined,
+                          label: 'Destino',
+                          value:
+                              detail['destino']?.toString() ?? 'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.payments_outlined,
+                          label: 'Precio',
+                          value: _formatPrice(detail['precio']),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: isPaid
+                              ? Icons.verified_outlined
+                              : Icons.hourglass_empty_outlined,
+                          iconColor: isPaid ? Colors.green : null,
+                          label: 'Pago',
+                          value: isPaid ? 'Pagado' : 'Pendiente de pago',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.person_outline,
+                          label: 'Cliente',
+                          value: clientName,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.notes_outlined,
+                          label: 'Anotaciones del cliente',
+                          value: anotaciones.isEmpty
+                              ? 'Sin anotaciones'
+                              : anotaciones,
+                        ),
+                      ] else ...[
+                        _buildInfoTile(
+                          icon: Icons.place_outlined,
+                          label: 'Origen',
+                          value:
+                              detail['origen']?.toString() ?? 'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.location_on_outlined,
+                          label: 'Destino',
+                          value:
+                              detail['destino']?.toString() ?? 'No disponible',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.payments_outlined,
+                          label: 'Precio',
+                          value: _formatPrice(detail['precio']),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: isPaid
+                              ? Icons.verified_outlined
+                              : Icons.hourglass_empty_outlined,
+                          iconColor: isPaid ? Colors.green : null,
+                          label: 'Pago',
+                          value: isPaid ? 'Pagado' : 'Pendiente de pago',
+                        ),
+                        const SizedBox(height: 10),
+                        _buildInfoTile(
+                          icon: Icons.local_taxi_outlined,
+                          label: 'Taxista',
+                          value: driverName,
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
-              if (isRideCancelable(state))
+              if (!widget.isDriverView) ...[
+                const SizedBox(height: 10),
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Taxista',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text('Nombre: ${_buildDriverName(detail)}'),
+                        Text('Vehiculo: ${_buildVehicleName(detail)}'),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+              if (!widget.isDriverView &&
+                  normalizeRideState(detail['estado']) == 'pendiente') ...[
+                const SizedBox(height: 16),
                 FilledButton.icon(
                   onPressed: _isCancelling
                       ? null
@@ -352,6 +794,49 @@ class _RideDetailScreenState extends State<RideDetailScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                 ),
+              ],
+              if (!widget.isDriverView && state == 'en_curso' && !isPaid) ...[
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: _isPaying ? null : () => _payRide(detail),
+                  icon: _isPaying
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.payments_outlined),
+                  label: Text(_isPaying ? 'Procesando...' : 'Pagar viaje'),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ],
+              if (widget.isDriverView) ...[
+                const SizedBox(height: 10),
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Cliente',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text('Nombre: $clientName'),
+                        Text(
+                          'Telefono: ${detail['cliente_telefono']?.toString() ?? 'No disponible'}',
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ],
           );
         },
