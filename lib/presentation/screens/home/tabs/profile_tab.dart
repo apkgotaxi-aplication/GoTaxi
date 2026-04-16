@@ -243,6 +243,7 @@ class _ProfileTabState extends State<ProfileTab> {
             ),
           ),
         );
+        Navigator.of(context).pop();
       }
     } catch (e) {
       if (mounted) {
