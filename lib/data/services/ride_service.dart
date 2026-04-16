@@ -478,7 +478,23 @@ class RideService {
       distanceKm: distanceKm,
       taxistaLat: lat,
       taxistaLng: lng,
-      updatedAt: updatedAtRaw == null ? null : DateTime.tryParse(updatedAtRaw),
+      updatedAt: _parseBackendTimestamp(updatedAtRaw),
     );
+  }
+
+  DateTime? _parseBackendTimestamp(String? rawValue) {
+    if (rawValue == null || rawValue.trim().isEmpty) return null;
+
+    final normalized = rawValue.trim();
+    final hasTimezone = RegExp(
+      r'(z|[+-]\d\d:?\d\d)$',
+      caseSensitive: false,
+    ).hasMatch(normalized);
+
+    final parsed = DateTime.tryParse(
+      hasTimezone ? normalized : '${normalized}Z',
+    );
+
+    return parsed?.toLocal();
   }
 }

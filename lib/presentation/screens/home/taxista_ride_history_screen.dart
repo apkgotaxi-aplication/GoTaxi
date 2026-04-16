@@ -256,7 +256,12 @@ class _TaxistaRideHistoryScreenState extends State<TaxistaRideHistoryScreen> {
           return RefreshIndicator(
             onRefresh: _reload,
             child: ListView(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.fromLTRB(
+                16,
+                16,
+                16,
+                MediaQuery.of(context).padding.bottom + 28,
+              ),
               children: [
                 TextField(
                   controller: _searchController,
@@ -283,15 +288,6 @@ class _TaxistaRideHistoryScreenState extends State<TaxistaRideHistoryScreen> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    OutlinedButton.icon(
-                      onPressed: _pickDateRange,
-                      icon: const Icon(Icons.date_range_outlined),
-                      label: Text(
-                        _dateRange == null
-                            ? 'Filtrar fecha'
-                            : '${_dateRange!.start.day}/${_dateRange!.start.month} - ${_dateRange!.end.day}/${_dateRange!.end.month}',
-                      ),
-                    ),
                     if (_dateRange != null)
                       TextButton(
                         onPressed: _clearDateRange,

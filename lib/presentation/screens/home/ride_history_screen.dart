@@ -294,10 +294,10 @@ class _RideHistoryScreenState extends State<RideHistoryScreen>
               final destination =
                   ride['destino']?.toString() ?? 'No disponible';
               final isRated = ride['valorado'] == true;
-              final paymentLabel = ride['pagado'] == true
+              final isPaidInGoTaxi = ride['pagado'] == true;
+              final paymentLabel = isPaidInGoTaxi
                   ? 'Pagado en GoTaxi'
                   : 'Pagado al taxista';
-              final isPaidInGoTaxi = paymentLabel == 'Pagado en GoTaxi';
               final statusColor = switch (state) {
                 'pendiente' => Colors.orange,
                 'confirmada' => Theme.of(context).colorScheme.primary,

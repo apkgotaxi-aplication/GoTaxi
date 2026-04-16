@@ -19,6 +19,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
   bool _updatingStatus = false;
   bool _processingRideAction = false;
   bool _updatingLocation = false;
+  bool _sharingLocationInProgress = false;
   bool _locationSharingEnabled = false;
   String? _error;
   DriverDashboardData? _dashboardData;
@@ -107,10 +108,22 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
 
   void _syncLocationTracking(Map<String, dynamic>? activeRide) {
     if (_shouldTrackLocation(activeRide)) {
-      _locationUpdateTimer ??= Timer.periodic(
-        const Duration(seconds: 15),
-        (_) => unawaited(_pushCurrentLocation()),
-      );
+      _locationUpdateTimer ??= Timer.periodic(const Duration(seconds: 15), (
+        _,
+      ) async {
+        final published = await _pushCurrentLocation();
+        if (!published && mounted && _locationSharingEnabled) {
+          setState(() {
+            _locationSharingEnabled = false;
+          });
+          _locationUpdateTimer?.cancel();
+          _locationUpdateTimer = null;
+          _showMessage(
+            'Se perdió la sincronización de ubicación. Pulsa "Compartir ubicación" para retomarla.',
+            isError: true,
+          );
+        }
+      });
       return;
     }
 
@@ -180,29 +193,73 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
       return;
     }
 
-    final canUseLocation = await _ensureLocationPermission(
-      showSettingsOnDeniedForever: true,
-    );
-    if (!canUseLocation) {
-      return;
-    }
-
-    final published = await _pushCurrentLocation(notifyOnError: true);
-    if (!published) {
-      return;
-    }
+    if (_sharingLocationInProgress) return;
 
     if (!mounted) return;
     setState(() {
-      _locationSharingEnabled = true;
+      _sharingLocationInProgress = true;
     });
 
-    _syncLocationTracking(ride);
+    _showLocationSharingDialog();
 
-    if (!mounted) return;
-    _showMessage(
-      'Ubicación compartida activada. El cliente ya puede ver su ubicación.',
-      isError: false,
+    try {
+      final canUseLocation = await _ensureLocationPermission(
+        showSettingsOnDeniedForever: true,
+      );
+      if (!canUseLocation) {
+        return;
+      }
+
+      final published = await _pushCurrentLocation(notifyOnError: true);
+      if (!published) {
+        return;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _locationSharingEnabled = true;
+      });
+
+      _syncLocationTracking(ride);
+
+      if (!mounted) return;
+      _showMessage(
+        'Ubicación compartida activada. El cliente ya puede ver su ubicación.',
+        isError: false,
+      );
+    } finally {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      setState(() {
+        _sharingLocationInProgress = false;
+      });
+    }
+  }
+
+  void _showLocationSharingDialog() {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => const PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: SizedBox(
+            width: 240,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                ),
+                SizedBox(width: 16),
+                Expanded(child: Text('Compartiendo ubicación...')),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -424,6 +481,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
     final estado = data.estadoTaxista;
     final isDisponible = estado == 'disponible';
     final isOcupado = estado == 'ocupado';
+    final isBusy = _sharingLocationInProgress || _updatingLocation;
     final estadoColor = isOcupado
         ? Colors.orange
         : (isDisponible ? Colors.green : Colors.red);
@@ -469,7 +527,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                       ),
                     ),
                     FilledButton(
-                      onPressed: (isOcupado || _updatingStatus)
+                      onPressed: (isOcupado || _updatingStatus || isBusy)
                           ? null
                           : _toggleDisponibilidad,
                       child: _updatingStatus
@@ -486,7 +544,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
             ),
             const SizedBox(height: 12),
             if (data.viajeActivo != null)
-              _buildViajeActivoCard(data.viajeActivo!)
+              _buildViajeActivoCard(data.viajeActivo!, isBusy: isBusy)
             else
               Card(
                 child: Padding(
@@ -552,7 +610,10 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
     );
   }
 
-  Widget _buildViajeActivoCard(Map<String, dynamic> ride) {
+  Widget _buildViajeActivoCard(
+    Map<String, dynamic> ride, {
+    required bool isBusy,
+  }) {
     final estado = ride['estado']?.toString() ?? '';
     final rideId = ride['id']?.toString() ?? '';
     final cliente =
@@ -614,20 +675,15 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                 Text('Pago: ${_buildPaymentLabel(ride)}'),
               ],
             ),
-            if (estado == 'confirmada') ...[
-              const SizedBox(height: 4),
-              Text(
-                'ETA del taxista al origen: disponible en una proxima version.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
+            if (estado == 'confirmada') ...[const SizedBox(height: 4)],
             const SizedBox(height: 12),
             Row(
               children: [
                 if (estado == 'pendiente')
                   Expanded(
                     child: FilledButton(
-                      onPressed: (rideId.isEmpty || _processingRideAction)
+                      onPressed:
+                          (rideId.isEmpty || _processingRideAction || isBusy)
                           ? null
                           : () => _handleRideAction(
                               action: 'confirmar',
@@ -640,7 +696,8 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                 if (estado == 'confirmada')
                   Expanded(
                     child: FilledButton(
-                      onPressed: (rideId.isEmpty || _processingRideAction)
+                      onPressed:
+                          (rideId.isEmpty || _processingRideAction || isBusy)
                           ? null
                           : () => _handleRideAction(
                               action: 'comenzar',
@@ -650,24 +707,23 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                     ),
                   ),
                 if (estado == 'confirmada') const SizedBox(width: 8),
-                if (estado == 'confirmada')
+                if (estado == 'confirmada' && !_locationSharingEnabled)
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: (rideId.isEmpty || _processingRideAction)
+                      onPressed:
+                          (rideId.isEmpty || _processingRideAction || isBusy)
                           ? null
                           : () => _shareLocationForRide(rideId),
-                      child: Text(
-                        _locationSharingEnabled
-                            ? 'Ubicación compartida'
-                            : 'Compartir ubicación',
-                      ),
+                      child: const Text('Compartir ubicación'),
                     ),
                   ),
-                if (estado == 'confirmada') const SizedBox(width: 8),
+                if (estado == 'confirmada' && !_locationSharingEnabled)
+                  const SizedBox(width: 8),
                 if (estado == 'pendiente')
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: (rideId.isEmpty || _processingRideAction)
+                      onPressed:
+                          (rideId.isEmpty || _processingRideAction || isBusy)
                           ? null
                           : () => _confirmCancelRide(rideId),
                       child: const Text('Cancelar'),
@@ -677,7 +733,8 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                 if (estado == 'en_curso')
                   Expanded(
                     child: FilledButton(
-                      onPressed: (rideId.isEmpty || _processingRideAction)
+                      onPressed:
+                          (rideId.isEmpty || _processingRideAction || isBusy)
                           ? null
                           : () => _confirmFinishRide(rideId),
                       child: const Text('Finalizar viaje'),

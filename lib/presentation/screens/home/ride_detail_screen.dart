@@ -424,6 +424,28 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     return '$day/$month/$year $hour:$minute';
   }
 
+  String _formatDatabaseDate(dynamic rawValue) {
+    if (rawValue == null) return 'Sin fecha';
+
+    final raw = rawValue.toString().trim();
+    if (raw.isEmpty) return 'Sin fecha';
+
+    final hasTimezone = RegExp(
+      r'(z|[+-]\d\d:?\d\d)$',
+      caseSensitive: false,
+    ).hasMatch(raw);
+    final parsed = DateTime.tryParse(hasTimezone ? raw : '${raw}Z');
+    if (parsed == null) return raw;
+
+    final local = parsed.toLocal();
+    final day = local.day.toString().padLeft(2, '0');
+    final month = local.month.toString().padLeft(2, '0');
+    final year = local.year;
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$day/$month/$year $hour:$minute';
+  }
+
   String _formatPrice(dynamic rawValue) {
     if (rawValue == null) return 'No disponible';
     final price = double.tryParse(rawValue.toString());
@@ -1075,6 +1097,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
           final actualDuration = _formatActualDuration(detail);
           final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
           final isPaid = _isRidePaid(detail);
+          final isFinalized = state == 'finalizada';
 
           return ListView(
             padding: EdgeInsets.fromLTRB(
@@ -1138,13 +1161,13 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                         _buildInfoTile(
                           icon: Icons.flight_takeoff_outlined,
                           label: 'Recogida',
-                          value: _formatDate(detail['fecha_recogida']),
+                          value: _formatDatabaseDate(detail['fecha_recogida']),
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
                           icon: Icons.flag_outlined,
                           label: 'Entrega',
-                          value: _formatDate(detail['fecha_entrega']),
+                          value: _formatDatabaseDate(detail['fecha_entrega']),
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
@@ -1193,7 +1216,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                               : Icons.hourglass_empty_outlined,
                           iconColor: isPaid ? Colors.green : null,
                           label: 'Pago',
-                          value: isPaid ? 'Pagado' : 'Pendiente de pago',
+                          value: isPaid
+                              ? 'Pagado'
+                              : (isFinalized
+                                    ? 'Pagado al taxista'
+                                    : 'Pendiente de pago'),
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
@@ -1236,7 +1263,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                               : Icons.hourglass_empty_outlined,
                           iconColor: isPaid ? Colors.green : null,
                           label: 'Pago',
-                          value: isPaid ? 'Pagado' : 'Pendiente de pago',
+                          value: isPaid
+                              ? 'Pagado'
+                              : (isFinalized
+                                    ? 'Pagado al taxista'
+                                    : 'Pendiente de pago'),
                         ),
                         const SizedBox(height: 10),
                         _buildInfoTile(
