@@ -858,7 +858,8 @@ class _MapTabState extends State<MapTab> {
 
     final theme = Theme.of(context);
     final panelColor =
-        theme.navigationBarTheme.backgroundColor ?? theme.colorScheme.surface;
+        (theme.navigationBarTheme.backgroundColor ?? theme.colorScheme.surface)
+            .withValues(alpha: 0.78);
 
     return Stack(
       children: [
@@ -1197,7 +1198,7 @@ class _MapTabState extends State<MapTab> {
                   const SizedBox(height: 10),
                   TextField(
                     controller: _annotationController,
-                    maxLines: 3,
+                    maxLines: 2,
                     textInputAction: TextInputAction.done,
                     decoration: InputDecoration(
                       labelText: 'Anotaciones para el taxista (opcional)',
@@ -1205,6 +1206,11 @@ class _MapTabState extends State<MapTab> {
                           'Ejemplo: portal 3, timbre 2B, acceso por rampa',
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
+                      ),
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 12,
                       ),
                     ),
                   ),
