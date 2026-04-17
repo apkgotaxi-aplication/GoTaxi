@@ -40,12 +40,15 @@ class _MapTabState extends State<MapTab> {
   );
   final TextEditingController _destinationController = TextEditingController();
   final TextEditingController _annotationController = TextEditingController();
+  final FocusNode _originFocusNode = FocusNode();
+  final FocusNode _destinationFocusNode = FocusNode();
   final Set<Marker> _markers = <Marker>{};
   final Set<Polyline> _polylines = <Polyline>{};
 
   bool _loading = true;
   bool _loadingRoute = false;
   bool _requestingRide = false;
+  bool _isRoutePanelCollapsed = false;
   String? _error;
   String? _routeError;
   String? _distanceText;
@@ -77,6 +80,8 @@ class _MapTabState extends State<MapTab> {
     _originController.dispose();
     _destinationController.dispose();
     _annotationController.dispose();
+    _originFocusNode.dispose();
+    _destinationFocusNode.dispose();
     _mapController?.dispose();
     _originDebounce?.cancel();
     _destinationDebounce?.cancel();
@@ -148,6 +153,7 @@ class _MapTabState extends State<MapTab> {
     setState(() {
       _originSuggestions = [];
     });
+    _maybeRecalculateRouteAfterLocationChange();
   }
 
   void _setFavoriteAsDestination(FavoriteLocation favorite) {
@@ -159,9 +165,23 @@ class _MapTabState extends State<MapTab> {
     setState(() {
       _destinationSuggestions = [];
     });
+    _maybeRecalculateRouteAfterLocationChange();
   }
 
   void _applyFavoriteToEmptyField(FavoriteLocation favorite) {
+    final originHasFocus = _originFocusNode.hasFocus;
+    final destinationHasFocus = _destinationFocusNode.hasFocus;
+
+    if (originHasFocus && !destinationHasFocus) {
+      _setFavoriteAsOrigin(favorite);
+      return;
+    }
+
+    if (destinationHasFocus && !originHasFocus) {
+      _setFavoriteAsDestination(favorite);
+      return;
+    }
+
     final destinationText = _destinationController.text.trim();
     final originText = _originController.text.trim();
     final originIsDefault =
@@ -178,6 +198,21 @@ class _MapTabState extends State<MapTab> {
     }
 
     _setFavoriteAsDestination(favorite);
+  }
+
+  void _maybeRecalculateRouteAfterLocationChange() {
+    final hasCalculatedRoute =
+        _distanceText != null && _durationText != null && !_loadingRoute;
+
+    if (hasCalculatedRoute && !_requestingRide) {
+      unawaited(_searchRoute());
+    }
+  }
+
+  String _distanceKmLabel() {
+    final meters = _distanceMeters;
+    if (meters == null) return '-';
+    return '${(meters / 1000).toStringAsFixed(2)} km';
   }
 
   Future<void> _saveFavorite({
@@ -433,6 +468,7 @@ class _MapTabState extends State<MapTab> {
       _showOriginSuggestions = false;
       _originSuggestions = [];
     });
+    _maybeRecalculateRouteAfterLocationChange();
   }
 
   void _selectDestinationSuggestion(PlacePrediction prediction) {
@@ -444,6 +480,7 @@ class _MapTabState extends State<MapTab> {
       _showDestinationSuggestions = false;
       _destinationSuggestions = [];
     });
+    _maybeRecalculateRouteAfterLocationChange();
   }
 
   Future<void> _determinePosition() async {
@@ -635,6 +672,7 @@ class _MapTabState extends State<MapTab> {
         _distanceMeters = distanceMeters;
         _durationSeconds = durationSeconds;
         _estimatedFareEur = estimatedFare;
+        _isRoutePanelCollapsed = true;
         _markers
           ..clear()
           ..add(
@@ -671,6 +709,7 @@ class _MapTabState extends State<MapTab> {
         _distanceMeters = null;
         _durationSeconds = null;
         _estimatedFareEur = null;
+        _isRoutePanelCollapsed = false;
       });
     } finally {
       if (mounted) {
@@ -860,6 +899,11 @@ class _MapTabState extends State<MapTab> {
     final panelColor =
         (theme.navigationBarTheme.backgroundColor ?? theme.colorScheme.surface)
             .withValues(alpha: 0.78);
+    final hasRoute = _distanceText != null && _durationText != null;
+    final showCollapsedPanel = hasRoute && _isRoutePanelCollapsed;
+    final collapsedInfoTextStyle = theme.textTheme.titleMedium?.copyWith(
+      fontWeight: FontWeight.w600,
+    );
 
     return Stack(
       children: [
@@ -888,244 +932,256 @@ class _MapTabState extends State<MapTab> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.gps_fixed_rounded,
-                          color: theme.colorScheme.primary,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TextField(
-                            controller: _originController,
-                            textInputAction: TextInputAction.next,
-                            onTap: () {
-                              if (_originController.text ==
-                                  _defaultOriginText) {
-                                _originController.selection = TextSelection(
-                                  baseOffset: 0,
-                                  extentOffset: _originController.text.length,
-                                );
-                              }
+                if (!showCollapsedPanel) ...[
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.gps_fixed_rounded,
+                            color: theme.colorScheme.primary,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextField(
+                              controller: _originController,
+                              focusNode: _originFocusNode,
+                              textInputAction: TextInputAction.next,
+                              onTap: () {
+                                if (_originController.text ==
+                                    _defaultOriginText) {
+                                  _originController.selection = TextSelection(
+                                    baseOffset: 0,
+                                    extentOffset: _originController.text.length,
+                                  );
+                                }
+                              },
+                              decoration: InputDecoration(
+                                hintText: 'Origen',
+                                filled: true,
+                                fillColor:
+                                    theme.colorScheme.surfaceContainerHighest,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.star),
+                            onPressed: () => _openFavoritesSheet('origin'),
+                            tooltip: 'Favoritos',
+                          ),
+                        ],
+                      ),
+                      if (_showOriginSuggestions) ...[
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 200),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest,
+                            borderRadius: const BorderRadius.only(
+                              bottomLeft: Radius.circular(12),
+                              bottomRight: Radius.circular(12),
+                            ),
+                            border: Border(
+                              bottom: BorderSide(
+                                color: theme.colorScheme.outlineVariant,
+                              ),
+                              left: BorderSide(
+                                color: theme.colorScheme.outlineVariant,
+                              ),
+                              right: BorderSide(
+                                color: theme.colorScheme.outlineVariant,
+                              ),
+                            ),
+                          ),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: _originSuggestions.length,
+                            itemBuilder: (context, index) {
+                              final suggestion = _originSuggestions[index];
+                              return InkWell(
+                                onTap: () =>
+                                    _selectOriginSuggestion(suggestion),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 10,
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        suggestion.mainText.isNotEmpty
+                                            ? suggestion.mainText
+                                            : suggestion.description,
+                                        style: theme.textTheme.bodyMedium
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w500,
+                                              color:
+                                                  theme.colorScheme.onSurface,
+                                            ),
+                                      ),
+                                      if (suggestion.secondaryText != null) ...[
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          suggestion.secondaryText!,
+                                          style: theme.textTheme.bodySmall
+                                              ?.copyWith(
+                                                color: theme
+                                                    .colorScheme
+                                                    .onSurfaceVariant,
+                                              ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              );
                             },
-                            decoration: InputDecoration(
-                              hintText: 'Origen',
-                              filled: true,
-                              fillColor:
-                                  theme.colorScheme.surfaceContainerHighest,
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide.none,
-                              ),
-                              isDense: true,
-                            ),
                           ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.star),
-                          onPressed: () => _openFavoritesSheet('origin'),
-                          tooltip: 'Favoritos',
                         ),
                       ],
-                    ),
-                    if (_showOriginSuggestions) ...[
-                      Container(
-                        constraints: const BoxConstraints(maxHeight: 200),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surfaceContainerHighest,
-                          borderRadius: const BorderRadius.only(
-                            bottomLeft: Radius.circular(12),
-                            bottomRight: Radius.circular(12),
-                          ),
-                          border: Border(
-                            bottom: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                            left: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                            right: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                          ),
-                        ),
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: _originSuggestions.length,
-                          itemBuilder: (context, index) {
-                            final suggestion = _originSuggestions[index];
-                            return InkWell(
-                              onTap: () => _selectOriginSuggestion(suggestion),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 10,
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      suggestion.mainText.isNotEmpty
-                                          ? suggestion.mainText
-                                          : suggestion.description,
-                                      style: theme.textTheme.bodyMedium
-                                          ?.copyWith(
-                                            fontWeight: FontWeight.w500,
-                                            color: theme.colorScheme.onSurface,
-                                          ),
-                                    ),
-                                    if (suggestion.secondaryText != null) ...[
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        suggestion.secondaryText!,
-                                        style: theme.textTheme.bodySmall
-                                            ?.copyWith(
-                                              color: theme
-                                                  .colorScheme
-                                                  .onSurfaceVariant,
-                                            ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
                     ],
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.location_pin,
-                          color: theme.colorScheme.primary,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TextField(
-                            controller: _destinationController,
-                            textInputAction: TextInputAction.search,
-                            onSubmitted: (_) => _searchRoute(),
-                            decoration: InputDecoration(
-                              hintText: 'Destino',
-                              filled: true,
-                              fillColor:
-                                  theme.colorScheme.surfaceContainerHighest,
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide.none,
+                  ),
+                  const SizedBox(height: 10),
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.location_pin,
+                            color: theme.colorScheme.primary,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextField(
+                              controller: _destinationController,
+                              focusNode: _destinationFocusNode,
+                              textInputAction: TextInputAction.search,
+                              onSubmitted: (_) => _searchRoute(),
+                              decoration: InputDecoration(
+                                hintText: 'Destino',
+                                filled: true,
+                                fillColor:
+                                    theme.colorScheme.surfaceContainerHighest,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                                isDense: true,
                               ),
-                              isDense: true,
                             ),
                           ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.star),
-                          onPressed: () => _openFavoritesSheet('destination'),
-                          tooltip: 'Favoritos',
+                          IconButton(
+                            icon: const Icon(Icons.star),
+                            onPressed: () => _openFavoritesSheet('destination'),
+                            tooltip: 'Favoritos',
+                          ),
+                        ],
+                      ),
+                      if (_visibleFavorites.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: _visibleFavorites.map((favorite) {
+                              return ActionChip(
+                                backgroundColor: Colors.white.withValues(
+                                  alpha: 0.30,
+                                ),
+                                avatar: Icon(
+                                  _favoriteIcon(favorite),
+                                  size: 18,
+                                  color: theme.colorScheme.primary,
+                                ),
+                                label: Text(_favoriteDisplayName(favorite)),
+                                onPressed: () =>
+                                    _applyFavoriteToEmptyField(favorite),
+                              );
+                            }).toList(),
+                          ),
                         ),
                       ],
-                    ),
-                    if (_visibleFavorites.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: _visibleFavorites.map((favorite) {
-                            return ActionChip(
-                              avatar: Icon(
-                                _favoriteIcon(favorite),
-                                size: 18,
-                                color: theme.colorScheme.primary,
+                      if (_showDestinationSuggestions) ...[
+                        Container(
+                          constraints: const BoxConstraints(maxHeight: 200),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.surfaceContainerHighest,
+                            borderRadius: const BorderRadius.only(
+                              bottomLeft: Radius.circular(12),
+                              bottomRight: Radius.circular(12),
+                            ),
+                            border: Border(
+                              bottom: BorderSide(
+                                color: theme.colorScheme.outlineVariant,
                               ),
-                              label: Text(_favoriteDisplayName(favorite)),
-                              onPressed: () =>
-                                  _applyFavoriteToEmptyField(favorite),
-                            );
-                          }).toList(),
-                        ),
-                      ),
-                    ],
-                    if (_showDestinationSuggestions) ...[
-                      Container(
-                        constraints: const BoxConstraints(maxHeight: 200),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surfaceContainerHighest,
-                          borderRadius: const BorderRadius.only(
-                            bottomLeft: Radius.circular(12),
-                            bottomRight: Radius.circular(12),
-                          ),
-                          border: Border(
-                            bottom: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                            left: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
-                            ),
-                            right: BorderSide(
-                              color: theme.colorScheme.outlineVariant,
+                              left: BorderSide(
+                                color: theme.colorScheme.outlineVariant,
+                              ),
+                              right: BorderSide(
+                                color: theme.colorScheme.outlineVariant,
+                              ),
                             ),
                           ),
-                        ),
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: _destinationSuggestions.length,
-                          itemBuilder: (context, index) {
-                            final suggestion = _destinationSuggestions[index];
-                            return InkWell(
-                              onTap: () =>
-                                  _selectDestinationSuggestion(suggestion),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 10,
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      suggestion.mainText.isNotEmpty
-                                          ? suggestion.mainText
-                                          : suggestion.description,
-                                      style: theme.textTheme.bodyMedium
-                                          ?.copyWith(
-                                            fontWeight: FontWeight.w500,
-                                            color: theme.colorScheme.onSurface,
-                                          ),
-                                    ),
-                                    if (suggestion.secondaryText != null) ...[
-                                      const SizedBox(height: 4),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: _destinationSuggestions.length,
+                            itemBuilder: (context, index) {
+                              final suggestion = _destinationSuggestions[index];
+                              return InkWell(
+                                onTap: () =>
+                                    _selectDestinationSuggestion(suggestion),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 10,
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
                                       Text(
-                                        suggestion.secondaryText!,
-                                        style: theme.textTheme.bodySmall
+                                        suggestion.mainText.isNotEmpty
+                                            ? suggestion.mainText
+                                            : suggestion.description,
+                                        style: theme.textTheme.bodyMedium
                                             ?.copyWith(
-                                              color: theme
-                                                  .colorScheme
-                                                  .onSurfaceVariant,
+                                              fontWeight: FontWeight.w500,
+                                              color:
+                                                  theme.colorScheme.onSurface,
                                             ),
                                       ),
+                                      if (suggestion.secondaryText != null) ...[
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          suggestion.secondaryText!,
+                                          style: theme.textTheme.bodySmall
+                                              ?.copyWith(
+                                                color: theme
+                                                    .colorScheme
+                                                    .onSurfaceVariant,
+                                              ),
+                                        ),
+                                      ],
                                     ],
-                                  ],
+                                  ),
                                 ),
-                              ),
-                            );
-                          },
+                              );
+                            },
+                          ),
                         ),
-                      ),
+                      ],
                     ],
-                  ],
-                ),
+                  ),
+                ],
                 if (_loadingRoute) ...[
                   const SizedBox(height: 10),
                   const LinearProgressIndicator(),
@@ -1154,7 +1210,58 @@ class _MapTabState extends State<MapTab> {
                     ),
                   ),
                 ],
-                if (_distanceText != null && _durationText != null) ...[
+                if (showCollapsedPanel) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.route_rounded,
+                        size: 18,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Distancia: ${_distanceText ?? '-'}',
+                        style: collapsedInfoTextStyle,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.straighten_rounded,
+                        size: 18,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Kilómetros: ${_distanceKmLabel()}',
+                        style: collapsedInfoTextStyle,
+                      ),
+                    ],
+                  ),
+                  if (_estimatedFareEur != null) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.local_taxi_rounded,
+                          size: 18,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Precio aprox.: ${_estimatedFareEur!.toStringAsFixed(2)} €',
+                          style: collapsedInfoTextStyle?.copyWith(
+                            color: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+                if (hasRoute && !showCollapsedPanel) ...[
                   const SizedBox(height: 10),
                   Row(
                     children: [
@@ -1195,6 +1302,8 @@ class _MapTabState extends State<MapTab> {
                       ],
                     ),
                   ],
+                ],
+                if (!showCollapsedPanel) ...[
                   const SizedBox(height: 10),
                   TextField(
                     controller: _annotationController,
@@ -1216,14 +1325,14 @@ class _MapTabState extends State<MapTab> {
                   ),
                 ],
                 const SizedBox(height: 12),
-                if (_distanceText == null || _durationText == null) ...[
+                if (!hasRoute || !showCollapsedPanel) ...[
                   FilledButton(
                     onPressed: (_loadingRoute || _requestingRide)
                         ? null
                         : _searchRoute,
-                    child: const Text('Calcular ruta'),
+                    child: Text(hasRoute ? 'Recalcular ruta' : 'Calcular ruta'),
                   ),
-                ] else ...[
+                ] else if (showCollapsedPanel) ...[
                   Row(
                     children: [
                       Expanded(
@@ -1236,11 +1345,15 @@ class _MapTabState extends State<MapTab> {
                       ),
                       const SizedBox(width: 10),
                       Expanded(
-                        child: FilledButton(
-                          onPressed: (_requestingRide)
+                        child: OutlinedButton(
+                          onPressed: (_requestingRide || _loadingRoute)
                               ? null
-                              : () => _createRide(isReservation: true),
-                          child: const Text('Reservar viaje'),
+                              : () {
+                                  setState(() {
+                                    _isRoutePanelCollapsed = false;
+                                  });
+                                },
+                          child: const Text('Editar viaje'),
                         ),
                       ),
                     ],
