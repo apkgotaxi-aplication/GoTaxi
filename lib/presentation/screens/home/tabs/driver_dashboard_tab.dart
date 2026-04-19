@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:gotaxi/data/services/taxista_service.dart';
 import 'package:gotaxi/presentation/screens/home/ride_history_screen.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class DriverDashboardTab extends StatefulWidget {
   const DriverDashboardTab({super.key});
@@ -12,7 +13,8 @@ class DriverDashboardTab extends StatefulWidget {
   State<DriverDashboardTab> createState() => _DriverDashboardTabState();
 }
 
-class _DriverDashboardTabState extends State<DriverDashboardTab> {
+class _DriverDashboardTabState extends State<DriverDashboardTab>
+    with WidgetsBindingObserver {
   final TaxistaService _taxistaService = TaxistaService();
 
   bool _loading = true;
@@ -24,17 +26,37 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
   String? _error;
   DriverDashboardData? _dashboardData;
   Timer? _locationUpdateTimer;
+  Timer? _dashboardRefreshDebounce;
+  Timer? _dashboardPollingTimer;
+  RealtimeChannel? _dashboardRealtimeChannel;
+  bool _dashboardLoadInFlight = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadDashboard();
+    _startDashboardRealtimeSync();
+    _startDashboardPolling();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _locationUpdateTimer?.cancel();
+    _dashboardRefreshDebounce?.cancel();
+    _dashboardPollingTimer?.cancel();
+    if (_dashboardRealtimeChannel != null) {
+      Supabase.instance.client.removeChannel(_dashboardRealtimeChannel!);
+    }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      unawaited(_loadDashboard(showLoader: false));
+    }
   }
 
   String _formatDuration(dynamic rawMinutes) {
@@ -69,19 +91,67 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
     return _isRidePaid(ride) ? 'Pagado' : 'Pendiente';
   }
 
-  Future<void> _loadDashboard() async {
-    setState(() {
-      _loading = true;
-      _error = null;
+  void _startDashboardRealtimeSync() {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    _dashboardRealtimeChannel = Supabase.instance.client
+        .channel('driver-dashboard-${user.id}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'viajes',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'driver_id',
+            value: user.id,
+          ),
+          callback: (_) => _scheduleDashboardRefresh(),
+        )
+        .subscribe();
+  }
+
+  void _scheduleDashboardRefresh() {
+    _dashboardRefreshDebounce?.cancel();
+    _dashboardRefreshDebounce = Timer(const Duration(milliseconds: 450), () {
+      if (!mounted) return;
+      unawaited(_loadDashboard(showLoader: false));
     });
+  }
+
+  void _startDashboardPolling() {
+    _dashboardPollingTimer?.cancel();
+    _dashboardPollingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      unawaited(_loadDashboard(showLoader: false));
+    });
+  }
+
+  Future<void> _loadDashboard({bool showLoader = true}) async {
+    if (_dashboardLoadInFlight) return;
+    _dashboardLoadInFlight = true;
+
+    if (showLoader) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
 
     try {
       final data = await _taxistaService.getDriverDashboardData(limit: 6);
+
       if (!mounted) return;
       setState(() {
         _dashboardData = data;
-        _loading = false;
+        if (showLoader) {
+          _loading = false;
+        }
+        if (!showLoader) {
+          _error = null;
+        }
       });
+
       if (data.viajeActivo == null) {
         _locationSharingEnabled = false;
       }
@@ -92,11 +162,15 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = 'No se pudo cargar el dashboard: $e';
-      });
+      if (showLoader) {
+        setState(() {
+          _loading = false;
+          _error = 'No se pudo cargar el dashboard: $e';
+        });
+      }
       _syncLocationTracking(null);
+    } finally {
+      _dashboardLoadInFlight = false;
     }
   }
 
@@ -543,34 +617,6 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
               ),
             ),
             const SizedBox(height: 12),
-            if (data.viajeActivo != null)
-              _buildViajeActivoCard(data.viajeActivo!, isBusy: isBusy)
-            else
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(
-                    'No tienes un viaje activo ahora mismo.',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ),
-              ),
-            const SizedBox(height: 12),
-            Text(
-              'Ultimos 3 viajes',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            if (ultimosViajesSinActivo.isEmpty)
-              const Card(
-                child: Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text('Aun no tienes viajes registrados.'),
-                ),
-              )
-            else
-              ...ultimosViajesSinActivo.map(_buildViajeResumenCard),
-            const SizedBox(height: 16),
             Text(
               'Accesos rapidos',
               style: Theme.of(context).textTheme.titleMedium,
@@ -604,6 +650,34 @@ class _DriverDashboardTabState extends State<DriverDashboardTab> {
                 ),
               ],
             ),
+            const SizedBox(height: 12),
+            if (data.viajeActivo != null)
+              _buildViajeActivoCard(data.viajeActivo!, isBusy: isBusy)
+            else
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    'No tienes un viaje activo ahora mismo.',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ),
+              ),
+            const SizedBox(height: 12),
+            Text(
+              'Ultimos 3 viajes',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            if (ultimosViajesSinActivo.isEmpty)
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text('Aun no tienes viajes registrados.'),
+                ),
+              )
+            else
+              ...ultimosViajesSinActivo.map(_buildViajeResumenCard),
           ],
         ),
       ),
