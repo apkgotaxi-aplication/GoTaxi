@@ -97,10 +97,14 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       _pendingCheckoutSessionId = null;
       return;
     }
-    _optimisticPaidUntilSync = true;
     _pendingCheckoutSessionId = sessionId;
     _waitingStripeReturn = true;
-    unawaited(_markRideAsPaidLocally());
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Volviendo de Stripe. Verificando el pago...'),
+      ),
+    );
     unawaited(_checkPaymentAfterStripeReturn());
   }
 
@@ -151,19 +155,21 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     try {
       for (var attempt = 0; attempt < 10; attempt++) {
         if (!mounted) return;
+        final checkoutSessionId = _pendingCheckoutSessionId;
+        if (checkoutSessionId == null || checkoutSessionId.isEmpty) {
+          break;
+        }
         try {
           await _stripePaymentService.syncRidePaymentStatus(
             rideId: widget.rideId,
-            checkoutSessionId: _pendingCheckoutSessionId,
+            checkoutSessionId: checkoutSessionId,
           );
         } catch (_) {}
         final latest = await _fetchRideDetail();
         if (!mounted) return;
         final confirmedPaid = _isRidePaidFromData(latest);
-        final displayDetail = _withOptimisticPaid(latest);
         setState(
-          () =>
-              _detailFuture = Future<Map<String, dynamic>>.value(displayDetail),
+          () => _detailFuture = Future<Map<String, dynamic>>.value(latest),
         );
         if (confirmedPaid) {
           _optimisticPaidUntilSync = false;
@@ -181,11 +187,10 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
-            'Aun no se refleja el pago. Se actualizara automaticamente en breve.',
+            'Aun no se confirma el pago. Reintentaremos la sincronizacion en breve.',
           ),
         ),
       );
-      ;
     } catch (_) {
     } finally {
       _checkingPaymentStatus = false;
@@ -214,23 +219,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       } catch (_) {}
       final refreshed = await _fetchRideDetail();
       if (!mounted) return;
-      if (_isRidePaidFromData(refreshed)) _optimisticPaidUntilSync = false;
+      if (_isRidePaidFromData(refreshed)) {
+        _optimisticPaidUntilSync = false;
+      }
       setState(
-        () => _detailFuture = Future<Map<String, dynamic>>.value(
-          _withOptimisticPaid(refreshed),
-        ),
-      );
-    } catch (_) {}
-  }
-
-  Future<void> _markRideAsPaidLocally() async {
-    try {
-      final current = await _detailFuture;
-      if (!mounted) return;
-      _optimisticPaidUntilSync = true;
-      final optimistic = _withOptimisticPaid(current);
-      setState(
-        () => _detailFuture = Future<Map<String, dynamic>>.value(optimistic),
+        () => _detailFuture = Future<Map<String, dynamic>>.value(refreshed),
       );
     } catch (_) {}
   }
@@ -340,30 +333,10 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     return _formatDuration(remaining);
   }
 
-  String _buildLastUpdateText() {
-    final updatedAt = _etaUpdatedAt;
-    if (updatedAt == null) return 'Sin actualización';
-    return _formatDuration(DateTime.now().difference(updatedAt));
-  }
-
   String _formatDate(dynamic rawValue) {
     if (rawValue == null) return 'Sin fecha';
     final parsed = DateTime.tryParse(rawValue.toString());
     if (parsed == null) return rawValue.toString();
-    final local = parsed.toLocal();
-    return '${local.day.toString().padLeft(2, '0')}/${local.month.toString().padLeft(2, '0')}/${local.year} ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-  }
-
-  String _formatDatabaseDate(dynamic rawValue) {
-    if (rawValue == null) return 'Sin fecha';
-    final raw = rawValue.toString().trim();
-    if (raw.isEmpty) return 'Sin fecha';
-    final hasTimezone = RegExp(
-      r'(z|[+-]\d\d:?\d\d)$',
-      caseSensitive: false,
-    ).hasMatch(raw);
-    final parsed = DateTime.tryParse(hasTimezone ? raw : '${raw}Z');
-    if (parsed == null) return raw;
     final local = parsed.toLocal();
     return '${local.day.toString().padLeft(2, '0')}/${local.month.toString().padLeft(2, '0')}/${local.year} ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
@@ -413,13 +386,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     final apellidos = detail['cliente_apellidos']?.toString().trim() ?? '';
     final fullName = '$nombre $apellidos'.trim();
     return fullName.isEmpty ? 'Sin cliente asignado' : fullName;
-  }
-
-  String _buildDriverLabel(Map<String, dynamic> detail) {
-    final nombre = detail['driver_nombre']?.toString().trim() ?? '';
-    final apellidos = detail['driver_apellidos']?.toString().trim() ?? '';
-    final fullName = '$nombre $apellidos'.trim();
-    return fullName.isEmpty ? 'Sin taxista asignado' : fullName;
   }
 
   Color _statusColor(String state, ColorScheme scheme) {
@@ -964,7 +930,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                 if (subtitle != null) ...[
                   const SizedBox(height: 2),
                   Text(
-                    subtitle!,
+                    subtitle,
                     style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                   ),
                 ],
@@ -1025,7 +991,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
           final colorScheme = Theme.of(context).colorScheme;
           final statusColor = _statusColor(state, colorScheme);
           final clientName = _buildClientName(detail);
-          final driverName = _buildDriverLabel(detail);
           final estimatedDuration = _formatMinutes(detail['duracion']);
           final actualDuration = _formatActualDuration(detail);
           final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
@@ -1135,15 +1100,15 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   children: [
                     _buildCompactChip(
                       icon: Icons.place,
-                      value:
-                          detail['origen']?.toString()?.split(',').first ??
-                          'Origen',
+                      value: (detail['origen']?.toString() ?? 'Origen')
+                          .split(',')
+                          .first,
                     ),
                     _buildCompactChip(
                       icon: Icons.location_on,
-                      value:
-                          detail['destino']?.toString()?.split(',').first ??
-                          'Destino',
+                      value: (detail['destino']?.toString() ?? 'Destino')
+                          .split(',')
+                          .first,
                     ),
                     _buildCompactChip(
                       icon: Icons.schedule,
