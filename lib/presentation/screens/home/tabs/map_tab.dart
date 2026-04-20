@@ -44,6 +44,8 @@ class _MapTabState extends State<MapTab> {
   final FocusNode _destinationFocusNode = FocusNode();
   final Set<Marker> _markers = <Marker>{};
   final Set<Polyline> _polylines = <Polyline>{};
+  int _passengerCount = 1;
+  bool _taxiMovilidadReducida = false;
 
   bool _loading = true;
   bool _loadingRoute = false;
@@ -752,6 +754,8 @@ class _MapTabState extends State<MapTab> {
     final durationSeconds = _durationSeconds;
     final fare = _estimatedFareEur;
     final anotaciones = _annotationController.text.trim();
+    final numPasajeros = _passengerCount;
+    final minusvalido = _taxiMovilidadReducida;
 
     if (origin == null ||
         destination == null ||
@@ -784,12 +788,12 @@ class _MapTabState extends State<MapTab> {
         origenLng: origin.longitude,
         destinoLat: destination.latitude,
         destinoLng: destination.longitude,
-        numPasajeros: 1,
+        numPasajeros: numPasajeros,
         anotaciones: anotaciones,
         distanciaKm: distanciaKm,
         precio: fare,
         duracionMin: duracionMinutos,
-        minusvalido: false,
+        minusvalido: minusvalido,
         ciudadOrigen: ciudadOrigen,
         fechaRecogida: isReservation
             ? DateTime.now().add(const Duration(minutes: 15))
@@ -1324,6 +1328,51 @@ class _MapTabState extends State<MapTab> {
                     ),
                   ),
                 ],
+                const SizedBox(height: 12),
+                DropdownButtonFormField<int>(
+                  initialValue: _passengerCount,
+                  decoration: InputDecoration(
+                    labelText: 'Número de pasajeros',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 12,
+                    ),
+                  ),
+                  items: List.generate(8, (index) {
+                    final value = index + 1;
+                    return DropdownMenuItem<int>(
+                      value: value,
+                      child: Text('$value'),
+                    );
+                  }),
+                  onChanged: (_loadingRoute || _requestingRide)
+                      ? null
+                      : (value) {
+                          if (value == null) return;
+                          setState(() {
+                            _passengerCount = value;
+                          });
+                        },
+                ),
+                const SizedBox(height: 2),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('Taxi movilidad reducida'),
+                  subtitle: const Text('Marcar para pedir taxi adaptado.'),
+                  value: _taxiMovilidadReducida,
+                  onChanged: (_loadingRoute || _requestingRide)
+                      ? null
+                      : (value) {
+                          setState(() {
+                            _taxiMovilidadReducida = value ?? false;
+                          });
+                        },
+                ),
                 const SizedBox(height: 12),
                 if (!hasRoute || !showCollapsedPanel) ...[
                   FilledButton(

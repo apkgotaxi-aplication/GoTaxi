@@ -400,19 +400,17 @@ class RideService {
       );
     }
 
-    if (message.contains('minusvalido')) {
+    if (message.contains('movilidad reducida')) {
       return RideAssignmentResult(
         success: false,
-        message:
-            '❌ No se encuentran taxis disponibles para personas con movilidad reducida en tu zona.',
+        message: 'No hay taxis de movilidad reducida en estos momentos.',
       );
     }
 
     if (message.contains('capacidad')) {
       return RideAssignmentResult(
         success: false,
-        message:
-            '❌ No se encuentran taxis disponibles con capacidad para $numPasajeros pasajeros.',
+        message: 'No hay taxis con esa capacidad.',
       );
     }
 
