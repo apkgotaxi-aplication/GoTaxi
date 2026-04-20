@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../screens/home/crear_taxista_screen.dart';
+import '../../screens/home/gestionar_clientes_screen.dart';
 import '../../screens/home/gestionar_tarifas_screen.dart';
 import '../../screens/home/gestionar_taxistas_screen.dart';
 import '../../screens/home/push_debug_screen.dart';
@@ -37,6 +38,24 @@ class AdminPanelFragment extends StatelessWidget {
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (_) => const CrearTaxistaScreen(),
+                    ),
+                  );
+                },
+              ),
+              Divider(
+                height: 1,
+                color: colorScheme.outline.withValues(alpha: 0.2),
+              ),
+              _AdminSectionItem(
+                icon: Icons.badge_outlined,
+                color: Colors.blue,
+                title: 'Ver clientes',
+                subtitle:
+                    'Ver todos los clientes registrados con foto y nombre.',
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const GestionarClientesScreen(),
                     ),
                   );
                 },
