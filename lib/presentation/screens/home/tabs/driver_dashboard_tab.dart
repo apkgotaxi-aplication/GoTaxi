@@ -635,20 +635,8 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
                     );
                   },
                   icon: const Icon(Icons.local_taxi),
-                  label: const Text('Viajes activos'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const RideHistoryScreen(initialTab: 1),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.history),
-                  label: const Text('Historial'),
-                ),
-              ],
+                  label: const Text('Historial de viajes'),
+                ),              ],
             ),
             const SizedBox(height: 12),
             if (data.viajeActivo != null)
