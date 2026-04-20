@@ -119,6 +119,43 @@ class TaxistaService {
     } catch (_) {}
   }
 
+  Future<void> _notifyBothParties({
+    required String viajeId,
+    required String clienteTitle,
+    required String clienteBody,
+    required String taxistaTitle,
+    required String taxistaBody,
+    String? tipo,
+  }) async {
+    try {
+      final viaje = await _supabase
+          .from('viajes')
+          .select('user_id, driver_id')
+          .eq('id', viajeId)
+          .maybeSingle();
+
+      if (viaje != null) {
+        if (viaje['user_id'] != null) {
+          await _sendPushNotification(
+            userId: viaje['user_id'] as String,
+            title: clienteTitle,
+            body: clienteBody,
+            data: {'viaje_id': viajeId, 'tipo': tipo},
+          );
+        }
+
+        if (viaje['driver_id'] != null) {
+          await _sendPushNotification(
+            userId: viaje['driver_id'] as String,
+            title: taxistaTitle,
+            body: taxistaBody,
+            data: {'viaje_id': viajeId, 'tipo': tipo},
+          );
+        }
+      }
+    } catch (_) {}
+  }
+
   Future<void> createTaxista({
     required String nombre,
     required String apellidos,
@@ -562,10 +599,12 @@ class TaxistaService {
       'finish_ride_by_driver',
       viajeId,
       onSuccess: () async {
-        await _notifyClienteViaje(
+        await _notifyBothParties(
           viajeId: viajeId,
-          title: 'Viaje finalizado',
-          body: 'El viaje ha finalizado correctamente',
+          clienteTitle: 'Viaje finalizado',
+          clienteBody: 'El viaje ha finalizado correctamente',
+          taxistaTitle: 'Viaje completado',
+          taxistaBody: 'Has completado el viaje exitosamente',
           tipo: 'viaje_finalizado',
         );
       },
