@@ -373,7 +373,7 @@ async function syncRidePaymentFromStripe(userId: string, rideId: string) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
     const paymentStatus = paymentIntent.status;
 
-    const shouldMarkPaid = paymentStatus === 'succeeded' || paymentStatus === 'processing';
+    const shouldMarkPaid = paymentStatus === 'succeeded';
 
     if (shouldMarkPaid && ride.pagado !== true) {
       await markRidePaid(rideId, paymentIntent.id, paymentStatus);
@@ -418,11 +418,8 @@ async function syncRidePaymentFromStripe(userId: string, rideId: string) {
     return (
       intentRideId === rideId &&
       intentUserId === userId &&
-      (intent.status === 'succeeded' || intent.status === 'processing')
+      intent.status === 'succeeded'
     );
-  }) ?? paymentIntents.data.find((intent) => {
-    const sameAmount = intent.amount === Math.max(0, Math.round(Number(ride.precio ?? 0) * 100));
-    return sameAmount && (intent.status === 'succeeded' || intent.status === 'processing');
   });
 
   if (!matchingIntent) {
@@ -431,7 +428,7 @@ async function syncRidePaymentFromStripe(userId: string, rideId: string) {
 
   const paymentStatus = matchingIntent.status;
 
-  const shouldMarkPaid = paymentStatus === 'succeeded' || paymentStatus === 'processing';
+  const shouldMarkPaid = paymentStatus === 'succeeded';
 
   if (shouldMarkPaid && ride.pagado !== true) {
     await markRidePaid(rideId, matchingIntent.id, paymentStatus);
@@ -482,13 +479,22 @@ async function syncRidePaymentFromCheckoutSession(
 
   if (paymentStatus === 'paid' && paymentIntentId) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-    await markRidePaid(rideId, paymentIntent.id, paymentIntent.status);
-    return { synced: true, paid: true, paymentStatus: paymentIntent.status };
+    if (paymentIntent.status === 'succeeded') {
+      await markRidePaid(rideId, paymentIntent.id, paymentIntent.status);
+      return { synced: true, paid: true, paymentStatus: paymentIntent.status };
+    }
+
+    await supabase
+      .from('viajes')
+      .update({ stripe_payment_status: paymentIntent.status })
+      .eq('id', rideId);
+
+    return { synced: true, paid: false, paymentStatus: paymentIntent.status };
   }
 
   if (paymentIntentId) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-    if (paymentIntent.status === 'succeeded' || paymentIntent.status === 'processing') {
+    if (paymentIntent.status === 'succeeded') {
       await markRidePaid(rideId, paymentIntent.id, paymentIntent.status);
       return { synced: true, paid: true, paymentStatus: paymentIntent.status };
     }
