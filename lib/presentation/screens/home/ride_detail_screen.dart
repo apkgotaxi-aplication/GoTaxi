@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:gotaxi/data/services/app_links_service.dart';
@@ -41,7 +42,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   bool _isRated = false;
   bool _ratingInProgress = false;
   int? _etaMinutes;
-  double? _etaDistanceKm;
   DateTime? _etaUpdatedAt;
   DateTime? _etaArrivalAt;
   StreamSubscription<Uri>? _deepLinkSubscription;
@@ -75,7 +75,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     if (widget.isDriverView) return;
     _refreshTimer?.cancel();
     _refreshTimer = Timer.periodic(
-      const Duration(seconds: 30),
+      const Duration(seconds: 8),
       (_) => unawaited(_refreshDetailAndEta()),
     );
     unawaited(_refreshDetailAndEta());
@@ -236,18 +236,29 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     try {
       final latest = await _fetchRideDetail();
       if (!mounted) return;
-      final displayDetail = _withOptimisticPaid(latest);
-      final state = normalizeRideState(latest['estado']);
+      final mergedDetail = _mergeRideDetail(latest);
+      final displayDetail = _withOptimisticPaid(mergedDetail);
+      final state = normalizeRideState(displayDetail['estado']);
       setState(
         () => _detailFuture = Future<Map<String, dynamic>>.value(displayDetail),
       );
       if (state == 'confirmada') {
-        await _refreshEta();
+        final localEtaMinutes = _estimateEtaMinutes(displayDetail);
+        if (localEtaMinutes != null) {
+          setState(() {
+            _etaMinutes = localEtaMinutes;
+            _etaUpdatedAt = DateTime.now();
+            _etaArrivalAt = DateTime.now().add(
+              Duration(minutes: localEtaMinutes),
+            );
+          });
+          _startEtaTicker();
+        }
+        await _refreshEta(displayDetail);
       } else {
         if (!mounted) return;
         setState(() {
           _etaMinutes = null;
-          _etaDistanceKm = null;
           _etaUpdatedAt = null;
           _etaArrivalAt = null;
         });
@@ -259,18 +270,33 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     }
   }
 
-  Future<void> _refreshEta() async {
+  Future<void> _refreshEta(Map<String, dynamic> rideDetail) async {
     try {
-      final result = await _rideService.fetchRideEta(rideId: widget.rideId);
+      final result = await _rideService.fetchRideEtaFromDetail(rideDetail);
       if (!mounted) return;
       if (!result.available || result.etaMin == null) {
+        final fallback = await _rideService.fetchRideEta(rideId: widget.rideId);
+        if (!mounted) return;
+        if (fallback.available && fallback.etaMin != null) {
+          final fallbackUpdatedAt = fallback.updatedAt?.toLocal();
+          final fallbackArrivalAt = fallbackUpdatedAt?.add(
+            Duration(minutes: fallback.etaMin!),
+          );
+          setState(() {
+            _etaMinutes = fallback.etaMin;
+            _etaUpdatedAt = fallbackUpdatedAt;
+            _etaArrivalAt = fallbackArrivalAt;
+          });
+          _startEtaTicker();
+          return;
+        }
+
         if (_etaUpdatedAt != null && _etaArrivalAt != null) {
           _startEtaTicker();
           return;
         }
         setState(() {
           _etaMinutes = null;
-          _etaDistanceKm = null;
           _etaUpdatedAt = null;
           _etaArrivalAt = null;
         });
@@ -281,7 +307,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       final arrivalAt = updatedAt?.add(Duration(minutes: result.etaMin!));
       setState(() {
         _etaMinutes = result.etaMin;
-        _etaDistanceKm = result.distanceKm;
         _etaUpdatedAt = updatedAt;
         _etaArrivalAt = arrivalAt;
       });
@@ -294,7 +319,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       }
       setState(() {
         _etaMinutes = null;
-        _etaDistanceKm = null;
         _etaUpdatedAt = null;
         _etaArrivalAt = null;
       });
@@ -315,6 +339,47 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     _etaTimer = null;
   }
 
+  Map<String, dynamic> _mergeRideDetail(Map<String, dynamic> detail) {
+    return {...widget.initialRide, ...detail};
+  }
+
+  int? _estimateEtaMinutes(Map<String, dynamic> detail) {
+    final originLat = _parseDouble(detail['origen_lat']);
+    final originLng = _parseDouble(detail['origen_lng']);
+    final driverLat = _parseDouble(detail['driver_lat']);
+    final driverLng = _parseDouble(detail['driver_lng']);
+
+    if (originLat == null ||
+        originLng == null ||
+        driverLat == null ||
+        driverLng == null) {
+      return null;
+    }
+
+    final distanceKm = _haversineKm(driverLat, driverLng, originLat, originLng);
+    return (distanceKm / 0.45).ceil().clamp(1, 9999);
+  }
+
+  double? _parseDouble(dynamic value) {
+    if (value == null) return null;
+    return double.tryParse(value.toString());
+  }
+
+  double _haversineKm(double lat1, double lng1, double lat2, double lng2) {
+    const earthRadiusKm = 6371.0;
+    final dLat = _degToRad(lat2 - lat1);
+    final dLng = _degToRad(lng2 - lng1);
+    final a =
+        (sin(dLat / 2) * sin(dLat / 2)) +
+        cos(_degToRad(lat1)) *
+            cos(_degToRad(lat2)) *
+            (sin(dLng / 2) * sin(dLng / 2));
+    final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    return earthRadiusKm * c;
+  }
+
+  double _degToRad(double deg) => deg * (pi / 180.0);
+
   String _formatDuration(Duration duration) {
     final safeDuration = duration.isNegative ? Duration.zero : duration;
     final hours = safeDuration.inHours;
@@ -324,10 +389,10 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     return '${minutes.toString().padLeft(2, '0')}m ${seconds.toString().padLeft(2, '0')}s';
   }
 
-  String _buildEtaCountdownText() {
-    final arrivalAt = _etaArrivalAt;
-    if (arrivalAt == null) return 'No disponible';
-    final remaining = arrivalAt.difference(DateTime.now());
+  String _buildEtaCountdownText([DateTime? arrivalAt]) {
+    final effectiveArrivalAt = arrivalAt ?? _etaArrivalAt;
+    if (effectiveArrivalAt == null) return 'No disponible';
+    final remaining = effectiveArrivalAt.difference(DateTime.now());
     if (remaining.isNegative || remaining == Duration.zero)
       return 'Llegada inminente';
     return _formatDuration(remaining);
@@ -986,7 +1051,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
               ),
             );
           }
-          final detail = snapshot.data ?? widget.initialRide;
+          final detail = _mergeRideDetail(snapshot.data ?? widget.initialRide);
           final state = normalizeRideState(detail['estado']);
           final colorScheme = Theme.of(context).colorScheme;
           final statusColor = _statusColor(state, colorScheme);
@@ -996,6 +1061,12 @@ class _RideDetailScreenState extends State<RideDetailScreen>
           final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
           final isPaid = _isRidePaid(detail);
           final isFinalized = state == 'finalizada';
+          final displayEtaMinutes = _etaMinutes ?? _estimateEtaMinutes(detail);
+          final displayEtaArrivalAt =
+              _etaArrivalAt ??
+              (displayEtaMinutes != null
+                  ? DateTime.now().add(Duration(minutes: displayEtaMinutes))
+                  : null);
           return SingleChildScrollView(
             padding: EdgeInsets.fromLTRB(
               16,
@@ -1180,7 +1251,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                 ),
                 if (!widget.isDriverView &&
                     state == 'confirmada' &&
-                    _etaMinutes != null) ...[
+                    displayEtaMinutes != null) ...[
                   const SizedBox(height: 20),
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -1211,17 +1282,9 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                                 ),
                               ),
                               Text(
-                                'Llega en ${_buildEtaCountdownText()}',
+                                'Llega en ${_buildEtaCountdownText(displayEtaArrivalAt)}',
                                 style: TextStyle(fontSize: 13),
                               ),
-                              if (_etaDistanceKm != null)
-                                Text(
-                                  '${_etaDistanceKm!.toStringAsFixed(1)} km de distancia',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
                             ],
                           ),
                         ),
@@ -1231,7 +1294,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                 ],
                 if (!widget.isDriverView &&
                     state == 'confirmada' &&
-                    _etaMinutes == null) ...[
+                    displayEtaMinutes == null) ...[
                   const SizedBox(height: 16),
                   Container(
                     padding: const EdgeInsets.all(10),

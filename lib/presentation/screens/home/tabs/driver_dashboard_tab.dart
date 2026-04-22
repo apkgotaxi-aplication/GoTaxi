@@ -298,7 +298,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
       if (!mounted) return;
       _showMessage(
-        'Ubicación compartida activada. El cliente ya puede ver su ubicación.',
+        'Ubicación activada. El cliente ve el tiempo estimado de llegada.',
         isError: false,
       );
     } finally {
@@ -636,7 +636,8 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
                   },
                   icon: const Icon(Icons.local_taxi),
                   label: const Text('Historial de viajes'),
-                ),              ],
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             if (data.viajeActivo != null)
