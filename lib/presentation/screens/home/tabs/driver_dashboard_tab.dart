@@ -298,7 +298,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
       if (!mounted) return;
       _showMessage(
-        'Ubicación compartida activada. El cliente ya puede ver su ubicación.',
+        'Ubicación activada. El cliente ve el tiempo estimado de llegada.',
         isError: false,
       );
     } finally {
@@ -635,18 +635,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
                     );
                   },
                   icon: const Icon(Icons.local_taxi),
-                  label: const Text('Viajes activos'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const RideHistoryScreen(initialTab: 1),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.history),
-                  label: const Text('Historial'),
+                  label: const Text('Historial de viajes'),
                 ),
               ],
             ),
