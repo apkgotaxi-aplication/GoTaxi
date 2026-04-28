@@ -7,6 +7,8 @@ import 'package:gotaxi/data/services/app_links_service.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
 import 'package:gotaxi/data/services/stripe_payment_service.dart';
 import 'package:gotaxi/data/services/rating_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:realtime_client/realtime_client.dart';
 import 'package:gotaxi/models/rating_model.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 import 'package:gotaxi/utils/ratings/rating_utils.dart';
@@ -135,18 +137,60 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     _etaTimer?.cancel();
     _deepLinkSubscription?.cancel();
     _mapController?.dispose();
+    _rideRealtimeChannel?.unsubscribe();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
+  RealtimeChannel? _rideRealtimeChannel;
+
   void _startAutoRefresh() {
-    if (widget.isDriverView) return;
+    // Start Realtime subscription for instant updates
+    _startRideRealtimeSync();
+
+    // Keep polling as backup (every 8 seconds)
     _refreshTimer?.cancel();
     _refreshTimer = Timer.periodic(
       const Duration(seconds: 8),
       (_) => unawaited(_refreshDetailAndEta()),
     );
     unawaited(_refreshDetailAndEta());
+  }
+
+  void _startRideRealtimeSync() {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    _rideRealtimeChannel?.unsubscribe();
+
+    _rideRealtimeChannel = Supabase.instance.client
+        .channel('ride-detail-${widget.rideId}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'viajes',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'id',
+            value: widget.rideId,
+          ),
+          callback: (payload) {
+            if (!mounted) return;
+            final newData = payload.newRecord;
+            if (newData != null) {
+              final updatedDetail = Map<String, dynamic>.from(newData);
+              setState(() {
+                _detailFuture = Future<Map<String, dynamic>>.value(updatedDetail);
+              });
+              // Trigger ETA refresh for active rides when driver location changes
+              final state = normalizeRideState(updatedDetail['estado']);
+              if (state == 'confirmada' && updatedDetail['driver_lat'] != null) {
+                unawaited(_refreshEta(updatedDetail));
+              }
+            }
+          },
+        )
+        .subscribe();
   }
 
   void _handleStripeDeepLink(Uri uri) {
@@ -1024,9 +1068,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     );
   }
 
-  Widget _buildRideMap(String state, ColorScheme colorScheme) {
-    // Use the latest ride detail from the future, not the initial static one
-    final detail = _mergeRideDetail(widget.initialRide);
+  Widget _buildRideMap(String state, ColorScheme colorScheme, Map<String, dynamic> detail) {
+    // Use the latest ride detail passed from the builder
     _driverLat = detail['driver_lat'] as double? ?? _driverLat;
     _driverLng = detail['driver_lng'] as double? ?? _driverLng;
     _originLat = detail['origen_lat'] as double? ?? _originLat;
@@ -1292,7 +1335,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                 const SizedBox(height: 16),
                 // Map showing driver location for active rides
                 if (state == 'confirmada' || state == 'en_curso') ...[
-                  _buildRideMap(state, colorScheme),
+                  _buildRideMap(state, colorScheme, detail),
                   const SizedBox(height: 16),
                 ],
                 Text(
@@ -1325,6 +1368,47 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                     value: anotaciones,
                     padding: 8,
                     fontSize: 12,
+                  ),
+                ],
+                if (widget.isDriverView && state == 'confirmada' && displayEtaMinutes != null) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: Colors.orange.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.navigation,
+                          color: Colors.orange,
+                          size: 22,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Tiempo restante',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.orange,
+                                ),
+                              ),
+                              Text(
+                                'Llegada en ${_buildEtaCountdownText(displayEtaArrivalAt)}',
+                                style: TextStyle(fontSize: 13),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
                 const SizedBox(height: 20),
