@@ -22,8 +22,66 @@ class RideDetailScreen extends StatefulWidget {
   final Map<String, dynamic> initialRide;
   final bool isDriverView;
 
+  /// Factory constructor for navigation from notifications when we don't have initialRide
+  static Future<void> openFromNotification(BuildContext context, String rideId) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => RideDetailScreenFromNotification(rideId: rideId),
+      ),
+    );
+  }
+
   @override
   State<RideDetailScreen> createState() => _RideDetailScreenState();
+}
+
+class RideDetailScreenFromNotification extends StatefulWidget {
+  const RideDetailScreenFromNotification({
+    super.key,
+    required this.rideId,
+  });
+
+  final String rideId;
+
+  @override
+  State<RideDetailScreenFromNotification> createState() => _RideDetailScreenFromNotificationState();
+}
+
+class _RideDetailScreenFromNotificationState extends State<RideDetailScreenFromNotification> {
+  late Future<Map<String, dynamic>> _detailFuture;
+  final RideService _rideService = RideService();
+
+  @override
+  void initState() {
+    super.initState();
+    _detailFuture = _rideService.fetchRideDetail(widget.rideId);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Map<String, dynamic>>(
+      future: _detailFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        if (snapshot.hasError || !snapshot.hasData) {
+          return Scaffold(
+            appBar: AppBar(title: const Text('Error')),
+            body: const Center(child: Text('No se pudo cargar el viaje')),
+          );
+        }
+
+        return RideDetailScreen(
+          rideId: widget.rideId,
+          initialRide: snapshot.data!,
+        );
+      },
+    );
+  }
 }
 
 class _RideDetailScreenState extends State<RideDetailScreen>

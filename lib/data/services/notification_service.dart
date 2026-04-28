@@ -1,9 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:onesignal_flutter/onesignal_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:gotaxi/main.dart';
+import 'package:gotaxi/presentation/screens/home/ride_detail_screen.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -65,7 +68,12 @@ class NotificationService {
     }
   }
 
-  void _navigateToRide(String viajeId) {}
+  void _navigateToRide(String viajeId) {
+    final context = navigatorKey.currentContext;
+    if (context != null) {
+      RideDetailScreen.openFromNotification(context, viajeId);
+    }
+  }
 
   Future<void> login(String userId) async {
     await initialize();

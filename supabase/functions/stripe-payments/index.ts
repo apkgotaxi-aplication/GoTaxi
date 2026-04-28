@@ -3,6 +3,8 @@ import Stripe from 'npm:stripe@16.12.0';
 
 const STRIPE_SECRET_KEY = Deno.env.get('STRIPE_SECRET_KEY');
 const STRIPE_WEBHOOK_SECRET = Deno.env.get('STRIPE_WEBHOOK_SECRET');
+const ONESIGNAL_API_KEY = Deno.env.get('ONESIGNAL_REST_API_KEY') ?? Deno.env.get('ONESIGNAL_API_KEY');
+const ONESIGNAL_APP_ID = Deno.env.get('ONESIGNAL_APP_ID');
 const APP_DEEPLINK_BASE = (Deno.env.get('APP_DEEPLINK_BASE') ?? 'gotaxi://stripe').replace(/\/$/, '');
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -343,6 +345,9 @@ async function markRidePaid(rideId: string, paymentIntentId: string, paymentStat
     p_pagado: true,
     p_paid_at: new Date().toISOString(),
   });
+
+  // Send notification for successful payment
+  await sendRidePaymentNotification(rideId, true);
 }
 
 async function syncRidePaymentFromStripe(userId: string, rideId: string) {
@@ -387,6 +392,11 @@ async function syncRidePaymentFromStripe(userId: string, rideId: string) {
           stripe_payment_status: paymentStatus,
         })
         .eq('id', rideId);
+    }
+
+    // Send failed payment notification if payment failed
+    if (!shouldMarkPaid && paymentStatus === 'canceled') {
+      await sendRidePaymentNotification(rideId, false);
     }
 
     return { synced: true, paid: ride.pagado === true || shouldMarkPaid, paymentStatus };
@@ -508,6 +518,79 @@ async function syncRidePaymentFromCheckoutSession(
   }
 
   return { synced: true, paid: false, paymentStatus };
+}
+
+async function sendRidePaymentNotification(rideId: string, paid: boolean) {
+  if (!ONESIGNAL_API_KEY || !ONESIGNAL_APP_ID) {
+    console.log('OneSignal not configured, skipping push notification');
+    return;
+  }
+
+  try {
+    const { data: ride, error } = await supabase
+      .from('viajes')
+      .select('user_id, driver_id, precio')
+      .eq('id', rideId)
+      .maybeSingle();
+
+    if (error || !ride) {
+      console.error('Error fetching ride for notification:', error);
+      return;
+    }
+
+    const onesignalPayload = (userId: string, title: string, body: string, tipo: string) => ({
+      app_id: ONESIGNAL_APP_ID,
+      headings: { en: title },
+      contents: { en: body },
+      data: { viaje_id: rideId, tipo },
+      ...(ride.user_id === userId
+        ? { include_aliases: { external_id: [userId] }, target_channel: 'push' }
+        : { include_aliases: { external_id: [userId] }, target_channel: 'push' }),
+    });
+
+    const notifications = [];
+
+    if (paid) {
+      // Notify client - payment successful
+      notifications.push({
+        ...onesignalPayload(ride.user_id, 'Pago confirmado', 'Gracias por tu pago. El taxista ha sido notificado.', 'pago_exitoso'),
+      });
+
+      // Notify driver - payment received
+      if (ride.driver_id) {
+        notifications.push({
+          ...onesignalPayload(ride.driver_id, 'Viaje pagado', `El cliente ha pagado ${(ride.precio ?? 0).toFixed(2)}€ del viaje.`, 'pago_recibido'),
+        });
+      }
+    } else {
+      // Notify client - payment failed
+      notifications.push({
+        ...onesignalPayload(ride.user_id, 'Pago fallido', 'Hubo un problema con tu pago. Por favor, inténtalo de nuevo.', 'pago_fallido'),
+      });
+    }
+
+    for (const notification of notifications) {
+      try {
+        const response = await fetch('https://api.onesignal.com/notifications?c=push', {
+          method: 'POST',
+          headers: {
+            'Authorization': `key ${ONESIGNAL_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(notification),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('OneSignal notification error:', errorText);
+        }
+      } catch (err) {
+        console.error('Error sending OneSignal notification:', err);
+      }
+    }
+  } catch (err) {
+    console.error('Error in sendRidePaymentNotification:', err);
+  }
 }
 
 Deno.serve(async (req) => {

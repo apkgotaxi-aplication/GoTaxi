@@ -138,6 +138,30 @@ class RideService {
     }
   }
 
+  Future<void> _notifyRideRequested({
+    required String clienteId,
+    required String viajeId,
+  }) async {
+    await _sendPushNotification(
+      userId: clienteId,
+      title: 'Solicitud enviada',
+      body: 'Buscando taxista cerca de ti...',
+      data: {'viaje_id': viajeId, 'tipo': 'solicitud_enviada'},
+    );
+  }
+
+  Future<void> _notifyNoTaxistasAvailable({
+    required String clienteId,
+    required String viajeId,
+  }) async {
+    await _sendPushNotification(
+      userId: clienteId,
+      title: 'Sin taxistas disponibles',
+      body: 'No encontramos taxistas disponibles. Intenta más tarde.',
+      data: {'viaje_id': viajeId, 'tipo': 'sin_taxistas'},
+    );
+  }
+
   Future<RideCancellationResult> cancelRide({required String viajeId}) async {
     final user = _supabase.auth.currentUser;
     if (user == null) {
@@ -265,13 +289,24 @@ class RideService {
       );
       final mappedResult = _mapErrorMessage(result, numPasajeros);
       if (mappedResult.success) {
-        _notifyRideAssignment(
-          clienteId: user.id,
-          taxistaId: mappedResult.taxistaId,
-          viajeId: mappedResult.viajeId,
-          origen: origen,
-          destino: destino,
-        );
+        // Notify client that request was sent
+        if (mappedResult.viajeId != null) {
+          _notifyRideRequested(clienteId: user.id, viajeId: mappedResult.viajeId!);
+        }
+
+        if (mappedResult.taxistaId != null && mappedResult.viajeId != null) {
+          // Taxista assigned - send both notifications
+          _notifyRideAssignment(
+            clienteId: user.id,
+            taxistaId: mappedResult.taxistaId,
+            viajeId: mappedResult.viajeId!,
+            origen: origen,
+            destino: destino,
+          );
+        } else if (mappedResult.viajeId != null) {
+          // No taxista assigned - notify client
+          _notifyNoTaxistasAvailable(clienteId: user.id, viajeId: mappedResult.viajeId!);
+        }
       }
       return mappedResult;
     }
@@ -282,13 +317,24 @@ class RideService {
       );
       final mappedResult = _mapErrorMessage(result, numPasajeros);
       if (mappedResult.success) {
-        _notifyRideAssignment(
-          clienteId: user.id,
-          taxistaId: mappedResult.taxistaId,
-          viajeId: mappedResult.viajeId,
-          origen: origen,
-          destino: destino,
-        );
+        // Notify client that request was sent
+        if (mappedResult.viajeId != null) {
+          _notifyRideRequested(clienteId: user.id, viajeId: mappedResult.viajeId!);
+        }
+
+        if (mappedResult.taxistaId != null && mappedResult.viajeId != null) {
+          // Taxista assigned - send both notifications
+          _notifyRideAssignment(
+            clienteId: user.id,
+            taxistaId: mappedResult.taxistaId,
+            viajeId: mappedResult.viajeId!,
+            origen: origen,
+            destino: destino,
+          );
+        } else if (mappedResult.viajeId != null) {
+          // No taxista assigned - notify client
+          _notifyNoTaxistasAvailable(clienteId: user.id, viajeId: mappedResult.viajeId!);
+        }
       }
       return mappedResult;
     }
@@ -595,5 +641,38 @@ class RideService {
     );
 
     return parsed?.toLocal();
+  }
+
+  Future<Map<String, dynamic>> fetchRideDetail(String rideId) async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      throw Exception('No hay usuario autenticado');
+    }
+
+    // Try as client first
+    try {
+      final response = await _supabase.rpc(
+        'get_ride_detail_client',
+        params: {'p_viaje_id': rideId, 'p_cliente_id': user.id},
+      );
+
+      if (response is List && response.isNotEmpty) {
+        return Map<String, dynamic>.from(response.first);
+      }
+    } catch (_) {}
+
+    // Try as driver
+    try {
+      final response = await _supabase.rpc(
+        'get_ride_detail_driver',
+        params: {'p_viaje_id': rideId, 'p_driver_id': user.id},
+      );
+
+      if (response is List && response.isNotEmpty) {
+        return Map<String, dynamic>.from(response.first);
+      }
+    } catch (_) {}
+
+    throw Exception('No se pudo cargar el viaje');
   }
 }
