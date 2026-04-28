@@ -1025,11 +1025,12 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   }
 
   Widget _buildRideMap(String state, ColorScheme colorScheme) {
+    // Use the latest ride detail from the future, not the initial static one
     final detail = _mergeRideDetail(widget.initialRide);
-    _driverLat = detail['driver_lat'] as double?;
-    _driverLng = detail['driver_lng'] as double?;
-    _originLat = detail['origen_lat'] as double?;
-    _originLng = detail['origen_lng'] as double?;
+    _driverLat = detail['driver_lat'] as double? ?? _driverLat;
+    _driverLng = detail['driver_lng'] as double? ?? _driverLng;
+    _originLat = detail['origen_lat'] as double? ?? _originLat;
+    _originLng = detail['origen_lng'] as double? ?? _originLng;
 
     if (_driverLat == null || _driverLng == null) {
       return const SizedBox.shrink();
