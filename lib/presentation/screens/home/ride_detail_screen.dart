@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:gotaxi/data/services/app_links_service.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
 import 'package:gotaxi/data/services/stripe_payment_service.dart';
@@ -107,6 +108,14 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   Timer? _etaTimer;
   String? _pendingCheckoutSessionId;
 
+  // Map for driver location
+  GoogleMapController? _mapController;
+  final Set<Marker> _markers = <Marker>{};
+  double? _driverLat;
+  double? _driverLng;
+  double? _originLat;
+  double? _originLng;
+
   @override
   void initState() {
     super.initState();
@@ -125,6 +134,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     _refreshTimer?.cancel();
     _etaTimer?.cancel();
     _deepLinkSubscription?.cancel();
+    _mapController?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -1014,29 +1024,105 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     );
   }
 
+  Widget _buildRideMap(String state, ColorScheme colorScheme) {
+    final detail = _mergeRideDetail(widget.initialRide);
+    _driverLat = detail['driver_lat'] as double?;
+    _driverLng = detail['driver_lng'] as double?;
+    _originLat = detail['origen_lat'] as double?;
+    _originLng = detail['origen_lng'] as double?;
+
+    if (_driverLat == null || _driverLng == null) {
+      return const SizedBox.shrink();
+    }
+
+    // Update markers
+    _markers.clear();
+    _markers.add(
+      Marker(
+        markerId: const MarkerId('taxista'),
+        position: LatLng(_driverLat!, _driverLng!),
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueYellow),
+        infoWindow: const InfoWindow(title: 'Taxista'),
+      ),
+    );
+
+    if (_originLat != null && _originLng != null) {
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('origen'),
+          position: LatLng(_originLat!, _originLng!),
+          infoWindow: const InfoWindow(title: 'Origen'),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 200,
+      child: GoogleMap(
+        onMapCreated: (controller) {
+          _mapController = controller;
+          // Fit map to show both markers
+          if (_originLat != null && _originLng != null) {
+            controller.animateCamera(
+              CameraUpdate.newLatLngBounds(
+                LatLngBounds(
+                  southwest: LatLng(
+                    _driverLat! < _originLat! ? _driverLat! : _originLat!,
+                    _driverLng! < _originLng! ? _driverLng! : _originLng!,
+                  ),
+                  northeast: LatLng(
+                    _driverLat! > _originLat! ? _driverLat! : _originLat!,
+                    _driverLng! > _originLng! ? _driverLng! : _originLng!,
+                  ),
+                ),
+                50,
+              ),
+            );
+          }
+        },
+        initialCameraPosition: CameraPosition(
+          target: LatLng(_driverLat!, _driverLng!),
+          zoom: 14,
+        ),
+        markers: _markers,
+        zoomControlsEnabled: false,
+        myLocationButtonEnabled: false,
+      ),
+    );
+  }
+
   Widget _buildPersonCard({
+    required BuildContext context,
     required String name,
     String? subtitle,
-    required IconData icon,
-    required Color bgColor,
-    required Color iconColor,
+    String? trailing,
+    String? avatarUrl,
+    IconData? icon,
+    Color? bgColor,
+    Color? iconColor,
   }) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: bgColor.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: bgColor.withValues(alpha: 0.3)),
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: colorScheme.outlineVariant.withValues(alpha: 0.3),
+        ),
       ),
       child: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: bgColor.withValues(alpha: 0.2),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, size: 20, color: iconColor),
+          CircleAvatar(
+            radius: 24,
+            backgroundColor: (bgColor ?? colorScheme.primary).withValues(alpha: 0.1),
+            backgroundImage:
+                (avatarUrl != null && avatarUrl.isNotEmpty)
+                    ? NetworkImage(avatarUrl)
+                    : null,
+            child: (avatarUrl == null || avatarUrl.isEmpty)
+                ? Icon(icon ?? Icons.person, color: iconColor ?? colorScheme.primary)
+                : null,
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1054,12 +1140,34 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey.shade600,
+                    ),
                   ),
                 ],
               ],
             ),
           ),
+          if (trailing != null)
+            Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 4,
+              ),
+              decoration: BoxDecoration(
+                color: colorScheme.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                trailing,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: colorScheme.primary,
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1181,6 +1289,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   ),
                 ),
                 const SizedBox(height: 16),
+                // Map showing driver location for active rides
+                if (state == 'confirmada' || state == 'en_curso') ...[
+                  _buildRideMap(state, colorScheme),
+                  const SizedBox(height: 16),
+                ],
                 Text(
                   widget.isDriverView ? 'CLIENTE' : 'TAXISTA',
                   style: TextStyle(
@@ -1192,6 +1305,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                 ),
                 const SizedBox(height: 8),
                 _buildPersonCard(
+                  context: context,
                   name: widget.isDriverView
                       ? clientName
                       : _buildDriverName(detail),

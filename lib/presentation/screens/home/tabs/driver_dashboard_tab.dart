@@ -121,9 +121,12 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
   void _startDashboardPolling() {
     _dashboardPollingTimer?.cancel();
-    _dashboardPollingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
-      unawaited(_loadDashboard(showLoader: false));
+    _dashboardPollingTimer = Timer.periodic(const Duration(seconds: 10), (
+      _,
+    ) {
+      if (mounted && !_dashboardLoadInFlight) {
+        unawaited(_loadDashboard(showLoader: false));
+      }
     });
   }
 
@@ -182,6 +185,12 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
   void _syncLocationTracking(Map<String, dynamic>? activeRide) {
     if (_shouldTrackLocation(activeRide)) {
+      // Activar ubicación automáticamente si no está activa
+      if (!_locationSharingEnabled) {
+        _autoEnableLocationSharing();
+        return;
+      }
+
       _locationUpdateTimer ??= Timer.periodic(const Duration(seconds: 15), (
         _,
       ) async {
@@ -203,6 +212,39 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
     _locationUpdateTimer?.cancel();
     _locationUpdateTimer = null;
+  }
+
+  Future<void> _autoEnableLocationSharing() async {
+    if (_sharingLocationInProgress) return;
+    if (!mounted) return;
+
+    setState(() {
+      _sharingLocationInProgress = true;
+    });
+
+    try {
+      final canUseLocation = await _ensureLocationPermission(
+        showSettingsOnDeniedForever: true,
+      );
+      if (!canUseLocation) return;
+
+      final published = await _pushCurrentLocation(notifyOnError: true);
+      if (!published) return;
+
+      if (!mounted) return;
+      setState(() {
+        _locationSharingEnabled = true;
+      });
+
+      _syncLocationTracking(_dashboardData?.viajeActivo);
+    } catch (_) {
+    } finally {
+      if (mounted) {
+        setState(() {
+          _sharingLocationInProgress = false;
+        });
+      }
+    }
   }
 
   Future<bool> _pushCurrentLocation({bool notifyOnError = false}) async {
