@@ -324,9 +324,10 @@ async function syncSavedPaymentMethodsFromStripe(userId: string) {
 }
 
 async function markRidePaid(rideId: string, paymentIntentId: string, paymentStatus: string) {
+  // First, check if ride exists and is not already paid
   const { data: ride, error } = await supabase
     .from('viajes')
-    .select('estado')
+    .select('estado, pagado, stripe_payment_intent_id')
     .eq('id', rideId)
     .maybeSingle();
 
@@ -336,6 +337,22 @@ async function markRidePaid(rideId: string, paymentIntentId: string, paymentStat
 
   if (!ride) {
     throw new Error('Viaje no encontrado');
+  }
+
+  // Prevent double-payment: only mark as paid if not already paid
+  if (ride.pagado === true) {
+    console.log('Ride already paid, skipping...');
+    return;
+  }
+
+  // Verify payment status is valid
+  if (paymentStatus !== 'succeeded') {
+    throw new Error(`Invalid payment status: ${paymentStatus}`);
+  }
+
+  // Verify this paymentIntentId matches the one in the ride
+  if (ride.stripe_payment_intent_id && ride.stripe_payment_intent_id !== paymentIntentId) {
+    console.warn('PaymentIntent ID mismatch, but proceeding with new ID');
   }
 
   await supabase.rpc('upsert_ride_payment_state', {
@@ -378,12 +395,41 @@ async function syncRidePaymentFromStripe(userId: string, rideId: string) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
     const paymentStatus = paymentIntent.status;
 
-    const shouldMarkPaid = paymentStatus === 'succeeded';
+    // Only mark as paid if status is 'succeeded' AND ride is not already paid
+    const shouldMarkPaid = paymentStatus === 'succeeded' && ride.pagado !== true;
 
-    if (shouldMarkPaid && ride.pagado !== true) {
+    if (shouldMarkPaid) {
+      // Double-check: verify this paymentIntent belongs to this ride
+      const piRideId = paymentIntent.metadata?.ride_id ?? '';
+      const piUserId = paymentIntent.metadata?.user_id ?? '';
+      
+      if (piRideId !== rideId) {
+        throw new Error('PaymentIntent does not belong to this ride');
+      }
+      
+      if (piUserId !== userId) {
+        throw new Error('PaymentIntent does not belong to this user');
+      }
+
       await markRidePaid(rideId, paymentIntent.id, paymentStatus);
       return { synced: true, paid: true, paymentStatus };
     }
+
+    // Update payment status if changed
+    if (ride.stripe_payment_status !== paymentStatus) {
+      await supabase
+        .from('viajes')
+        .update({ stripe_payment_status: paymentStatus })
+        .eq('id', rideId);
+    }
+
+    // Send failed payment notification if payment failed
+    if (paymentStatus === 'canceled' || paymentStatus === 'failed') {
+      await sendRidePaymentNotification(rideId, false);
+    }
+
+    return { synced: true, paid: ride.pagado === true, paymentStatus };
+  }
 
     if (ride.stripe_payment_status !== paymentStatus) {
       await supabase
@@ -487,13 +533,29 @@ async function syncRidePaymentFromCheckoutSession(
 
   const paymentStatus = session.payment_status ?? '';
 
+  // Only mark as paid if payment_status is 'paid' AND paymentIntent is 'succeeded'
   if (paymentStatus === 'paid' && paymentIntentId) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    
+    // Strict validation: only succeeded status should mark as paid
     if (paymentIntent.status === 'succeeded') {
+      // Double-check: make sure this paymentIntent belongs to this ride
+      const piRideId = paymentIntent.metadata?.ride_id ?? '';
+      const piUserId = paymentIntent.metadata?.user_id ?? '';
+      
+      if (piRideId !== rideId) {
+        throw new Error('PaymentIntent does not belong to this ride');
+      }
+      
+      if (piUserId !== userId) {
+        throw new Error('PaymentIntent does not belong to this user');
+      }
+      
       await markRidePaid(rideId, paymentIntent.id, paymentIntent.status);
       return { synced: true, paid: true, paymentStatus: paymentIntent.status };
     }
 
+    // Payment not succeeded - update status but don't mark as paid
     await supabase
       .from('viajes')
       .update({ stripe_payment_status: paymentIntent.status })
@@ -504,7 +566,21 @@ async function syncRidePaymentFromCheckoutSession(
 
   if (paymentIntentId) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    
+    // Only mark as paid if status is succeeded
     if (paymentIntent.status === 'succeeded') {
+      // Double-check: make sure this paymentIntent belongs to this ride
+      const piRideId = paymentIntent.metadata?.ride_id ?? '';
+      const piUserId = paymentIntent.metadata?.user_id ?? '';
+      
+      if (piRideId !== rideId) {
+        throw new Error('PaymentIntent does not belong to this ride');
+      }
+      
+      if (piUserId !== userId) {
+        throw new Error('PaymentIntent does not belong to this user');
+      }
+      
       await markRidePaid(rideId, paymentIntent.id, paymentIntent.status);
       return { synced: true, paid: true, paymentStatus: paymentIntent.status };
     }
