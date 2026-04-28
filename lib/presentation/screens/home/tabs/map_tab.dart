@@ -541,6 +541,11 @@ class _MapTabState extends State<MapTab> {
           );
         _loading = false;
       });
+
+      // Get real address for origin
+      if (_originController.text.trim() == _defaultOriginText) {
+        _updateOriginAddress(_currentPosition!);
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -735,6 +740,37 @@ class _MapTabState extends State<MapTab> {
     }
   }
 
+  Future<String> _getFullAddress(LatLng origin) async {
+    try {
+      final placemarks = await placemarkFromCoordinates(
+        origin.latitude,
+        origin.longitude,
+      );
+      if (placemarks.isEmpty) return '${origin.latitude},${origin.longitude}';
+      final place = placemarks.first;
+      final street = place.street ?? '';
+      final locality = place.locality ?? '';
+      if (street.isNotEmpty && locality.isNotEmpty) {
+        return '$street, $locality';
+      } else if (street.isNotEmpty) {
+        return street;
+      } else if (locality.isNotEmpty) {
+        return locality;
+      }
+      return '${origin.latitude},${origin.longitude}';
+    } catch (_) {
+      return '${origin.latitude},${origin.longitude}';
+    }
+  }
+
+  Future<void> _updateOriginAddress(LatLng origin) async {
+    final address = await _getFullAddress(origin);
+    if (!mounted) return;
+    setState(() {
+      _originController.text = address;
+    });
+  }
+
   Future<void> _createRide({required bool isReservation}) async {
     if (_loadingRoute || _requestingRide) return;
 
@@ -769,21 +805,25 @@ class _MapTabState extends State<MapTab> {
       return;
     }
 
-    setState(() {
-      _requestingRide = true;
-      _routeError = null;
-    });
+      setState(() {
+        _requestingRide = true;
+        _routeError = null;
+      });
 
-    try {
-      final ciudadOrigen = await _resolveOriginCity(origin);
-      final duracionMinutos = (durationSeconds / 60).round();
-      final distanciaKm = distanceMeters / 1000;
+      try {
+        final ciudadOrigen = await _resolveOriginCity(origin);
+        final duracionMinutos = (durationSeconds / 60).round();
+        final distanciaKm = distanceMeters / 1000;
 
-      final result = await _rideService.createRideAssignment(
-        origen: _originController.text.trim().isEmpty
-            ? '${origin.latitude},${origin.longitude}'
-            : _originController.text.trim(),
-        destino: _destinationController.text.trim(),
+        // Get real address if using "Mi ubicación actual"
+        final origenText = _originController.text.trim();
+        final origenFinal = (origenText.isEmpty || origenText == _defaultOriginText)
+            ? await _getFullAddress(origin)
+            : origenText;
+
+        final result = await _rideService.createRideAssignment(
+          origen: origenFinal,
+          destino: _destinationController.text.trim(),
         origenLat: origin.latitude,
         origenLng: origin.longitude,
         destinoLat: destination.latitude,
