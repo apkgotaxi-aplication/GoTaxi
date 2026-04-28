@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
+    android:width="64dp"
+    android:height="64dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Large notification icon: colored taxi logo -->
     <path
         android:fillColor="#FFC107"
         android:pathData="M54,27L54,27A22,22 0,0 1,76 49L76,59A22,22 0,0 1,54 81L54,81A22,22 0,0 1,32 59L32,49A22,22 0,0 1,54 27z"/>

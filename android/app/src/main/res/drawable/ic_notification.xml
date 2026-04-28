@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Small notification icon: white taxi icon (required by Android) -->
     <path
-        android:fillColor="#FFC107"
-        android:pathData="M54,27L54,27A22,22 0,0 1,76 49L76,59A22,22 0,0 1,54 81L54,81A22,22 0,0 1,32 59L32,49A22,22 0,0 1,54 27z"/>
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,35L54,35A12,12 0,0 1,66 47L66,47A12,12 0,0 1,54 59L54,59A12,12 0,0 1,42 47L42,47A12,12 0,0 1,54 35z"/>
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M18,17h-2v-1.5H8V17H6v-2.5h1.5V13H6V9.5h2.25l1.5,-2.25h3.5L15.25,9.5H17.5V13h-1.5v1.5H17V17zM11.25,10.5h-1.5V13h1.5V10.5zM14.25,10.5h-1.5V13h1.5V10.5z"/>
 </vector>

@@ -37,6 +37,12 @@ class NotificationService {
 
     await OneSignal.initialize(appId);
 
+    // Configure notification icons for Android
+    // Small icon: appears in status bar (must be white-transparent)
+    // Large icon: appears inside notification (your app logo)
+    OneSignal.Notifications.setLauncherIconSmall('ic_notification');
+    OneSignal.Notifications.setLauncherIconLarge('ic_notification_large');
+
     OneSignal.Notifications.addClickListener(_handleNotificationTap);
     OneSignal.Notifications.addForegroundWillDisplayListener(
       _handleForegroundNotification,
