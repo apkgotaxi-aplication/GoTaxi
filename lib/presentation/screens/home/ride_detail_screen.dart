@@ -13,6 +13,31 @@ import 'package:gotaxi/models/rating_model.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 import 'package:gotaxi/utils/ratings/rating_utils.dart';
 
+bool shouldEnableRidePaymentButton({
+  required bool isDriverView,
+  required bool isPaying,
+  required bool waitingStripeReturn,
+  required bool isPaid,
+  required String rideState,
+}) {
+  return !isDriverView &&
+      !isPaying &&
+      !waitingStripeReturn &&
+      rideState == 'en_curso' &&
+      !isPaid;
+}
+
+bool shouldShowRideMap(String rideState) {
+  return normalizeRideState(rideState) == 'confirmada';
+}
+
+bool shouldPollStripePayment({
+  required String rideState,
+  required bool waitingStripeReturn,
+}) {
+  return waitingStripeReturn && normalizeRideState(rideState) == 'en_curso';
+}
+
 class RideDetailScreen extends StatefulWidget {
   const RideDetailScreen({
     super.key,
@@ -26,7 +51,10 @@ class RideDetailScreen extends StatefulWidget {
   final bool isDriverView;
 
   /// Factory constructor for navigation from notifications when we don't have initialRide
-  static Future<void> openFromNotification(BuildContext context, String rideId) async {
+  static Future<void> openFromNotification(
+    BuildContext context,
+    String rideId,
+  ) async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => RideDetailScreenFromNotification(rideId: rideId),
@@ -39,18 +67,17 @@ class RideDetailScreen extends StatefulWidget {
 }
 
 class RideDetailScreenFromNotification extends StatefulWidget {
-  const RideDetailScreenFromNotification({
-    super.key,
-    required this.rideId,
-  });
+  const RideDetailScreenFromNotification({super.key, required this.rideId});
 
   final String rideId;
 
   @override
-  State<RideDetailScreenFromNotification> createState() => _RideDetailScreenFromNotificationState();
+  State<RideDetailScreenFromNotification> createState() =>
+      _RideDetailScreenFromNotificationState();
 }
 
-class _RideDetailScreenFromNotificationState extends State<RideDetailScreenFromNotification> {
+class _RideDetailScreenFromNotificationState
+    extends State<RideDetailScreenFromNotification> {
   late Future<Map<String, dynamic>> _detailFuture;
   final RideService _rideService = RideService();
 
@@ -108,6 +135,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   StreamSubscription<Uri>? _deepLinkSubscription;
   Timer? _refreshTimer;
   Timer? _etaTimer;
+  Timer? _stripePaymentPollingTimer;
   String? _pendingCheckoutSessionId;
 
   // Map for driver location
@@ -135,6 +163,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   void dispose() {
     _refreshTimer?.cancel();
     _etaTimer?.cancel();
+    _stripePaymentPollingTimer?.cancel();
     _deepLinkSubscription?.cancel();
     _mapController?.dispose();
     _rideRealtimeChannel?.unsubscribe();
@@ -176,17 +205,14 @@ class _RideDetailScreenState extends State<RideDetailScreen>
           ),
           callback: (payload) {
             if (!mounted) return;
-            final newData = payload.newRecord;
-            if (newData != null) {
-              final updatedDetail = Map<String, dynamic>.from(newData);
-              setState(() {
-                _detailFuture = Future<Map<String, dynamic>>.value(updatedDetail);
-              });
-              // Trigger ETA refresh for active rides when driver location changes
-              final state = normalizeRideState(updatedDetail['estado']);
-              if (state == 'confirmada' && updatedDetail['driver_lat'] != null) {
-                unawaited(_refreshEta(updatedDetail));
-              }
+            final updatedDetail = Map<String, dynamic>.from(payload.newRecord);
+            setState(() {
+              _detailFuture = Future<Map<String, dynamic>>.value(updatedDetail);
+            });
+            // Trigger ETA refresh for active rides when driver location changes
+            final state = normalizeRideState(updatedDetail['estado']);
+            if (state == 'confirmada' && updatedDetail['driver_lat'] != null) {
+              unawaited(_refreshEta(updatedDetail));
             }
           },
         )
@@ -201,29 +227,36 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     if (!isSuccess && !isCancel) return;
     if (isCancel) {
       if (!mounted) return;
+      _stopStripePaymentPolling();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Pago cancelado en Stripe.')),
       );
-      _optimisticPaidUntilSync = false;
-      _waitingStripeReturn = false;
-      _pendingCheckoutSessionId = null;
+      setState(() {
+        _optimisticPaidUntilSync = false;
+        _waitingStripeReturn = false;
+        _pendingCheckoutSessionId = null;
+      });
       return;
     }
-    _pendingCheckoutSessionId = sessionId;
-    _waitingStripeReturn = true;
     if (!mounted) return;
+    setState(() {
+      _pendingCheckoutSessionId = sessionId;
+      _waitingStripeReturn = true;
+    });
+    _startStripePaymentPolling(checkoutSessionId: sessionId);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Volviendo de Stripe. Verificando el pago...'),
       ),
     );
-    unawaited(_checkPaymentAfterStripeReturn());
+    unawaited(_pollStripePaymentStatus(sessionId));
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && _waitingStripeReturn) {
-      unawaited(_checkPaymentAfterStripeReturn());
+      _startStripePaymentPolling(checkoutSessionId: _pendingCheckoutSessionId);
+      unawaited(_pollStripePaymentStatus(_pendingCheckoutSessionId));
       return;
     }
     if (state == AppLifecycleState.resumed)
@@ -241,7 +274,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   }
 
   bool _isRidePaidFromData(Map<String, dynamic> detail) {
-    if (detail['pagado'] == true) return true;
+    if (normalizeRidePaymentStatus(detail['pagado'])) return true;
     final stripeStatus = detail['stripe_payment_status']
         ?.toString()
         .toLowerCase()
@@ -259,54 +292,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     return Map<String, dynamic>.from(detail)
       ..['pagado'] = true
       ..['stripe_payment_status'] = 'succeeded';
-  }
-
-  Future<void> _checkPaymentAfterStripeReturn() async {
-    if (_checkingPaymentStatus) return;
-    _checkingPaymentStatus = true;
-    try {
-      for (var attempt = 0; attempt < 10; attempt++) {
-        if (!mounted) return;
-        final checkoutSessionId = _pendingCheckoutSessionId;
-        if (checkoutSessionId == null || checkoutSessionId.isEmpty) {
-          break;
-        }
-        try {
-          await _stripePaymentService.syncRidePaymentStatus(
-            rideId: widget.rideId,
-            checkoutSessionId: checkoutSessionId,
-          );
-        } catch (_) {}
-        final latest = await _fetchRideDetail();
-        if (!mounted) return;
-        final confirmedPaid = _isRidePaidFromData(latest);
-        setState(
-          () => _detailFuture = Future<Map<String, dynamic>>.value(latest),
-        );
-        if (confirmedPaid) {
-          _optimisticPaidUntilSync = false;
-          _waitingStripeReturn = false;
-          _pendingCheckoutSessionId = null;
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Pago confirmado correctamente.')),
-          );
-          return;
-        }
-        if (attempt < 9) await Future<void>.delayed(const Duration(seconds: 2));
-      }
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Aun no se confirma el pago. Reintentaremos la sincronizacion en breve.',
-          ),
-        ),
-      );
-    } catch (_) {
-    } finally {
-      _checkingPaymentStatus = false;
-    }
   }
 
   Future<void> _tryAutoSyncPendingPayment({String? checkoutSessionId}) async {
@@ -338,6 +323,57 @@ class _RideDetailScreenState extends State<RideDetailScreen>
         () => _detailFuture = Future<Map<String, dynamic>>.value(refreshed),
       );
     } catch (_) {}
+  }
+
+  void _startStripePaymentPolling({String? checkoutSessionId}) {
+    _stripePaymentPollingTimer?.cancel();
+    _stripePaymentPollingTimer = Timer.periodic(const Duration(seconds: 1), (
+      _,
+    ) {
+      if (!mounted || !_waitingStripeReturn) {
+        _stopStripePaymentPolling();
+        return;
+      }
+      unawaited(_pollStripePaymentStatus(checkoutSessionId));
+    });
+  }
+
+  void _stopStripePaymentPolling() {
+    _stripePaymentPollingTimer?.cancel();
+    _stripePaymentPollingTimer = null;
+  }
+
+  Future<void> _pollStripePaymentStatus(String? checkoutSessionId) async {
+    if (_checkingPaymentStatus) return;
+    _checkingPaymentStatus = true;
+    try {
+      try {
+        await _stripePaymentService.syncRidePaymentStatus(
+          rideId: widget.rideId,
+          checkoutSessionId: checkoutSessionId,
+        );
+      } catch (_) {}
+      final latest = await _fetchRideDetail();
+      if (!mounted) return;
+      final confirmedPaid = _isRidePaidFromData(latest);
+      final rideState = normalizeRideState(latest['estado']);
+      setState(
+        () => _detailFuture = Future<Map<String, dynamic>>.value(latest),
+      );
+      if (confirmedPaid || rideState != 'en_curso') {
+        _waitingStripeReturn = false;
+        _pendingCheckoutSessionId = null;
+        _stopStripePaymentPolling();
+        if (confirmedPaid && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Pago confirmado correctamente.')),
+          );
+        }
+      }
+    } catch (_) {
+    } finally {
+      _checkingPaymentStatus = false;
+    }
   }
 
   Future<void> _reload() async => await _refreshDetailAndEta();
@@ -666,8 +702,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       }
       await _stripePaymentService.openCheckoutUrl(result.checkoutUrl!);
       _pendingCheckoutSessionId = result.checkoutSessionId;
-      _waitingStripeReturn = true;
       if (!mounted) return;
+      setState(() {
+        _waitingStripeReturn = true;
+      });
+      _startStripePaymentPolling(checkoutSessionId: result.checkoutSessionId);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -1068,7 +1107,14 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     );
   }
 
-  Widget _buildRideMap(String state, ColorScheme colorScheme, Map<String, dynamic> detail) {
+  Widget _buildRideMap(
+    String state,
+    ColorScheme colorScheme,
+    Map<String, dynamic> detail,
+  ) {
+    if (!shouldShowRideMap(state)) {
+      return const SizedBox.shrink();
+    }
     // Use the latest ride detail passed from the builder
     _driverLat = detail['driver_lat'] as double? ?? _driverLat;
     _driverLng = detail['driver_lng'] as double? ?? _driverLng;
@@ -1159,13 +1205,17 @@ class _RideDetailScreenState extends State<RideDetailScreen>
         children: [
           CircleAvatar(
             radius: 24,
-            backgroundColor: (bgColor ?? colorScheme.primary).withValues(alpha: 0.1),
-            backgroundImage:
-                (avatarUrl != null && avatarUrl.isNotEmpty)
-                    ? NetworkImage(avatarUrl)
-                    : null,
+            backgroundColor: (bgColor ?? colorScheme.primary).withValues(
+              alpha: 0.1,
+            ),
+            backgroundImage: (avatarUrl != null && avatarUrl.isNotEmpty)
+                ? NetworkImage(avatarUrl)
+                : null,
             child: (avatarUrl == null || avatarUrl.isEmpty)
-                ? Icon(icon ?? Icons.person, color: iconColor ?? colorScheme.primary)
+                ? Icon(
+                    icon ?? Icons.person,
+                    color: iconColor ?? colorScheme.primary,
+                  )
                 : null,
           ),
           const SizedBox(width: 12),
@@ -1184,10 +1234,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey.shade600,
-                    ),
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
                   ),
                 ],
               ],
@@ -1195,10 +1242,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
           ),
           if (trailing != null)
             Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 10,
-                vertical: 4,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
                 color: colorScheme.primary.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(8),
@@ -1333,8 +1377,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   ),
                 ),
                 const SizedBox(height: 16),
-                // Map showing driver location for active rides
-                if (state == 'confirmada' || state == 'en_curso') ...[
+                // Map showing driver location only for confirmed rides
+                if (shouldShowRideMap(state)) ...[
                   _buildRideMap(state, colorScheme, detail),
                   const SizedBox(height: 16),
                 ],
@@ -1370,7 +1414,9 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                     fontSize: 12,
                   ),
                 ],
-                if (widget.isDriverView && state == 'confirmada' && displayEtaMinutes != null) ...[
+                if (widget.isDriverView &&
+                    state == 'confirmada' &&
+                    displayEtaMinutes != null) ...[
                   const SizedBox(height: 16),
                   Container(
                     padding: const EdgeInsets.all(12),
@@ -1383,11 +1429,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                     ),
                     child: Row(
                       children: [
-                        Icon(
-                          Icons.navigation,
-                          color: Colors.orange,
-                          size: 22,
-                        ),
+                        Icon(Icons.navigation, color: Colors.orange, size: 22),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Column(
@@ -1670,8 +1712,17 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed: _isPaying ? null : () => _payRide(detail),
-                      icon: _isPaying
+                      onPressed:
+                          shouldEnableRidePaymentButton(
+                            isDriverView: widget.isDriverView,
+                            isPaying: _isPaying,
+                            waitingStripeReturn: _waitingStripeReturn,
+                            isPaid: isPaid,
+                            rideState: state,
+                          )
+                          ? () => _payRide(detail)
+                          : null,
+                      icon: (_isPaying || _waitingStripeReturn)
                           ? const SizedBox(
                               height: 18,
                               width: 18,
@@ -1681,7 +1732,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                               ),
                             )
                           : const Icon(Icons.payment),
-                      label: Text(_isPaying ? 'Procesando...' : 'Pagar ahora'),
+                      label: Text(
+                        _waitingStripeReturn
+                            ? 'Esperando Stripe...'
+                            : (_isPaying ? 'Procesando...' : 'Pagar ahora'),
+                      ),
                       style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),

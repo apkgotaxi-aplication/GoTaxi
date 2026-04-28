@@ -121,9 +121,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
   void _startDashboardPolling() {
     _dashboardPollingTimer?.cancel();
-    _dashboardPollingTimer = Timer.periodic(const Duration(seconds: 10), (
-      _,
-    ) {
+    _dashboardPollingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (mounted && !_dashboardLoadInFlight) {
         unawaited(_loadDashboard(showLoader: false));
       }
@@ -812,18 +810,6 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
                     ),
                   ),
                 if (estado == 'confirmada') const SizedBox(width: 8),
-                if (estado == 'confirmada' && !_locationSharingEnabled)
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed:
-                          (rideId.isEmpty || _processingRideAction || isBusy)
-                          ? null
-                          : () => _shareLocationForRide(rideId),
-                      child: const Text('Compartir ubicación'),
-                    ),
-                  ),
-                if (estado == 'confirmada' && !_locationSharingEnabled)
-                  const SizedBox(width: 8),
                 if (estado == 'pendiente')
                   Expanded(
                     child: OutlinedButton(
