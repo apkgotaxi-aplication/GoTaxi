@@ -37,6 +37,17 @@ bool shouldPollStripePayment({
   return waitingStripeReturn && normalizeRideState(rideState) == 'en_curso';
 }
 
+String? extractStripeCheckoutSessionId(Uri uri) {
+  final keys = ['session_id', 'checkout_session_id', 'sessionId'];
+  for (final key in keys) {
+    final value = uri.queryParameters[key];
+    if (value != null && value.trim().isNotEmpty) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 class RideDetailScreen extends StatefulWidget {
   const RideDetailScreen({
     super.key,
@@ -110,9 +121,7 @@ class _RideDetailScreenFromNotificationState
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     if (_errorMessage != null || _ride == null) {
@@ -135,10 +144,7 @@ class _RideDetailScreenFromNotificationState
       );
     }
 
-    return RideDetailScreen(
-      rideId: widget.rideId,
-      initialRide: _ride!,
-    );
+    return RideDetailScreen(rideId: widget.rideId, initialRide: _ride!);
   }
 }
 
@@ -258,7 +264,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     if (uri.scheme != 'gotaxi' || uri.host != 'stripe') return;
     final isSuccess = uri.path.contains('success');
     final isCancel = uri.path.contains('cancel');
-    final sessionId = uri.queryParameters['session_id'];
+    final sessionId = extractStripeCheckoutSessionId(uri);
     if (!isSuccess && !isCancel) return;
     if (isCancel) {
       if (!mounted) return;
@@ -295,8 +301,9 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     if (user == null) return;
 
     _rideRealtimeChannel?.unsubscribe();
-    _rideRealtimeChannel = Supabase.instance.client
-        .channel('ride-detail-${widget.rideId}');
+    _rideRealtimeChannel = Supabase.instance.client.channel(
+      'ride-detail-${widget.rideId}',
+    );
 
     // Listen to INSERT events
     _rideRealtimeChannel!.onPostgresChanges(
@@ -352,7 +359,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       // If no realtime events for a while, try to reconnect
       final now = DateTime.now();
       if (_lastRealtimeEventTime != null &&
-          now.difference(_lastRealtimeEventTime!) > const Duration(minutes: 2)) {
+          now.difference(_lastRealtimeEventTime!) >
+              const Duration(minutes: 2)) {
         setState(() => _isRealtimeConnected = false);
         _startRideRealtimeSync();
       }
@@ -362,7 +370,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   void _handleRealtimeUpdate(PostgresChangePayload payload) {
     if (!mounted) return;
     _lastRealtimeEventTime = DateTime.now();
-    
+
     switch (payload.eventType) {
       case PostgresChangeEvent.insert:
       case PostgresChangeEvent.update:
@@ -382,8 +390,12 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     if (_isUpdatingRide) return;
     _isUpdatingRide = true;
     try {
-      final newUpdateTime = DateTime.tryParse(newData['updated_at']?.toString() ?? '');
-      if (newUpdateTime != null && _lastRideUpdateTime != null && newUpdateTime.isBefore(_lastRideUpdateTime!)) {
+      final newUpdateTime = DateTime.tryParse(
+        newData['updated_at']?.toString() ?? '',
+      );
+      if (newUpdateTime != null &&
+          _lastRideUpdateTime != null &&
+          newUpdateTime.isBefore(_lastRideUpdateTime!)) {
         return;
       }
       if (!mounted) return;
@@ -399,7 +411,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       }
       // Refresh ETA for active rides
       final state = normalizeRideState(_ride!['estado']);
-      if ((state == 'confirmada' || state == 'en_curso') && _ride!['driver_lat'] != null) {
+      if ((state == 'confirmada' || state == 'en_curso') &&
+          _ride!['driver_lat'] != null) {
         unawaited(_refreshEta(_ride!));
         _updateMapPosition();
       }
@@ -409,7 +422,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   }
 
   void _updateMapPosition() {
-    if (_driverLat == null || _driverLng == null || _mapController == null) return;
+    if (_driverLat == null || _driverLng == null || _mapController == null)
+      return;
     _mapController!.animateCamera(
       CameraUpdate.newLatLng(LatLng(_driverLat!, _driverLng!)),
     );
@@ -434,12 +448,19 @@ class _RideDetailScreenState extends State<RideDetailScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && !_isRealtimeConnected && !_isRideFinalized) {
+    if (state == AppLifecycleState.resumed &&
+        !_isRealtimeConnected &&
+        !_isRideFinalized) {
       _startRideRealtimeSync();
     }
     if (state == AppLifecycleState.resumed && _waitingStripeReturn) {
       _startStripePaymentPolling(checkoutSessionId: _pendingCheckoutSessionId);
       unawaited(_pollStripePaymentStatus(_pendingCheckoutSessionId));
+      unawaited(
+        _tryAutoSyncPendingPayment(
+          checkoutSessionId: _pendingCheckoutSessionId,
+        ),
+      );
       return;
     }
     if (state == AppLifecycleState.resumed) {
@@ -1408,10 +1429,10 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _errorMessage != null
-              ? _buildErrorView()
-              : _ride == null
-                  ? const Center(child: Text('Sin datos'))
-                  : _buildRideContent(),
+          ? _buildErrorView()
+          : _ride == null
+          ? const Center(child: Text('Sin datos'))
+          : _buildRideContent(),
     );
   }
 
@@ -1422,11 +1443,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.error_outline,
-              size: 52,
-              color: Colors.red.shade400,
-            ),
+            Icon(Icons.error_outline, size: 52, color: Colors.red.shade400),
             const SizedBox(height: 12),
             Text(
               'No se pudo cargar el detalle del viaje.',
@@ -1481,13 +1498,9 @@ class _RideDetailScreenState extends State<RideDetailScreen>
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: colorScheme.surfaceContainerHighest.withValues(
-                alpha: 0.3,
-              ),
+              color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: statusColor.withValues(alpha: 0.3),
-              ),
+              border: Border.all(color: statusColor.withValues(alpha: 0.3)),
             ),
             child: Row(
               children: [
@@ -1541,9 +1554,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
           const SizedBox(height: 8),
           _buildPersonCard(
             context: context,
-            name: widget.isDriverView
-                ? clientName
-                : _buildDriverName(detail),
+            name: widget.isDriverView ? clientName : _buildDriverName(detail),
             subtitle: widget.isDriverView
                 ? detail['cliente_telefono']?.toString()
                 : _buildVehicleName(detail),
@@ -1570,9 +1581,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
               decoration: BoxDecoration(
                 color: Colors.orange.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: Colors.orange.withValues(alpha: 0.3),
-                ),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
               ),
               child: Row(
                 children: [
@@ -1641,13 +1650,9 @@ class _RideDetailScreenState extends State<RideDetailScreen>
               children: [
                 _buildCompactChip(
                   icon: Icons.people,
-                  value:
-                      '${detail['num_pasajeros']?.toString() ?? '0'} Pax',
+                  value: '${detail['num_pasajeros']?.toString() ?? '0'} Pax',
                 ),
-                _buildCompactChip(
-                  icon: Icons.timer,
-                  value: estimatedDuration,
-                ),
+                _buildCompactChip(icon: Icons.timer, value: estimatedDuration),
                 if (state == 'finalizada')
                   _buildCompactChip(
                     icon: Icons.av_timer,
@@ -1671,9 +1676,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
             children: [
               Expanded(
                 child: _buildInfoTile(
-                  icon: isPaid
-                      ? Icons.check_circle
-                      : Icons.hourglass_empty,
+                  icon: isPaid ? Icons.check_circle : Icons.hourglass_empty,
                   label: 'Estado',
                   value: isPaid
                       ? 'Pagado'
@@ -1800,10 +1803,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
               _isRated) ...[
             const SizedBox(height: 20),
             Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 10,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: Colors.green.shade50,
                 borderRadius: BorderRadius.circular(10),
@@ -1867,8 +1867,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
                       isPaid: isPaid,
                       rideState: state,
                     )
-                        ? () => _payRide(detail)
-                        : null,
+                    ? () => _payRide(detail)
+                    : null,
                 icon: (_isPaying || _waitingStripeReturn)
                     ? const SizedBox(
                         height: 18,
