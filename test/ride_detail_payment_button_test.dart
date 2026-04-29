@@ -100,6 +100,25 @@ void main() {
     });
   });
 
+  group('Stripe deeplink helpers', () {
+    test('extrae session_id de la url', () {
+      final uri = Uri.parse('gotaxi://stripe/success?session_id=cs_test_123');
+      expect(extractStripeCheckoutSessionId(uri), 'cs_test_123');
+    });
+
+    test('extrae checkout_session_id de la url alterna', () {
+      final uri = Uri.parse(
+        'gotaxi://stripe/success?checkout_session_id=cs_test_456',
+      );
+      expect(extractStripeCheckoutSessionId(uri), 'cs_test_456');
+    });
+
+    test('no extrae session id cuando no existe', () {
+      final uri = Uri.parse('gotaxi://stripe/success');
+      expect(extractStripeCheckoutSessionId(uri), isNull);
+    });
+  });
+
   group('normalizeRidePaymentStatus', () {
     test('interpreta true en String como pago', () {
       expect(normalizeRidePaymentStatus('true'), isTrue);
