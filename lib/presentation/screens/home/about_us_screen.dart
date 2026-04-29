@@ -134,7 +134,7 @@ class AboutUsScreen extends StatelessWidget {
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Datos de ejemplo: REEMPLAZAR correo, telefono y web.',
+                    'Para consultas de prensa, alianzas comerciales o soporte corporativo, por favor contactanos a traves de los canales indicados.',
                   ),
                 ),
               ],
