@@ -1,4 +1,10 @@
+import 'dart:math';
+
+import 'dart:convert';
+
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
 
 class RideAssignmentResult {
   const RideAssignmentResult({
@@ -47,20 +53,10 @@ class RideCancellationResult {
 }
 
 class RideEtaResult {
-  const RideEtaResult({
-    required this.available,
-    this.etaMin,
-    this.distanceKm,
-    this.taxistaLat,
-    this.taxistaLng,
-    this.updatedAt,
-  });
+  const RideEtaResult({required this.available, this.etaMin, this.updatedAt});
 
   final bool available;
   final int? etaMin;
-  final double? distanceKm;
-  final double? taxistaLat;
-  final double? taxistaLng;
   final DateTime? updatedAt;
 
   factory RideEtaResult.unavailable() {
@@ -140,6 +136,30 @@ class RideService {
         data: {'viaje_id': viajeId, 'tipo': 'viaje_cancelado'},
       );
     }
+  }
+
+  Future<void> _notifyRideRequested({
+    required String clienteId,
+    required String viajeId,
+  }) async {
+    await _sendPushNotification(
+      userId: clienteId,
+      title: 'Solicitud enviada',
+      body: 'Buscando taxista cerca de ti...',
+      data: {'viaje_id': viajeId, 'tipo': 'solicitud_enviada'},
+    );
+  }
+
+  Future<void> _notifyNoTaxistasAvailable({
+    required String clienteId,
+    required String viajeId,
+  }) async {
+    await _sendPushNotification(
+      userId: clienteId,
+      title: 'Sin taxistas disponibles',
+      body: 'No encontramos taxistas disponibles. Intenta más tarde.',
+      data: {'viaje_id': viajeId, 'tipo': 'sin_taxistas'},
+    );
   }
 
   Future<RideCancellationResult> cancelRide({required String viajeId}) async {
@@ -269,13 +289,24 @@ class RideService {
       );
       final mappedResult = _mapErrorMessage(result, numPasajeros);
       if (mappedResult.success) {
-        _notifyRideAssignment(
-          clienteId: user.id,
-          taxistaId: mappedResult.taxistaId,
-          viajeId: mappedResult.viajeId,
-          origen: origen,
-          destino: destino,
-        );
+        // Notify client that request was sent
+        if (mappedResult.viajeId != null) {
+          _notifyRideRequested(clienteId: user.id, viajeId: mappedResult.viajeId!);
+        }
+
+        if (mappedResult.taxistaId != null && mappedResult.viajeId != null) {
+          // Taxista assigned - send both notifications
+          _notifyRideAssignment(
+            clienteId: user.id,
+            taxistaId: mappedResult.taxistaId,
+            viajeId: mappedResult.viajeId!,
+            origen: origen,
+            destino: destino,
+          );
+        } else if (mappedResult.viajeId != null) {
+          // No taxista assigned - notify client
+          _notifyNoTaxistasAvailable(clienteId: user.id, viajeId: mappedResult.viajeId!);
+        }
       }
       return mappedResult;
     }
@@ -286,13 +317,24 @@ class RideService {
       );
       final mappedResult = _mapErrorMessage(result, numPasajeros);
       if (mappedResult.success) {
-        _notifyRideAssignment(
-          clienteId: user.id,
-          taxistaId: mappedResult.taxistaId,
-          viajeId: mappedResult.viajeId,
-          origen: origen,
-          destino: destino,
-        );
+        // Notify client that request was sent
+        if (mappedResult.viajeId != null) {
+          _notifyRideRequested(clienteId: user.id, viajeId: mappedResult.viajeId!);
+        }
+
+        if (mappedResult.taxistaId != null && mappedResult.viajeId != null) {
+          // Taxista assigned - send both notifications
+          _notifyRideAssignment(
+            clienteId: user.id,
+            taxistaId: mappedResult.taxistaId,
+            viajeId: mappedResult.viajeId!,
+            origen: origen,
+            destino: destino,
+          );
+        } else if (mappedResult.viajeId != null) {
+          // No taxista assigned - notify client
+          _notifyNoTaxistasAvailable(clienteId: user.id, viajeId: mappedResult.viajeId!);
+        }
       }
       return mappedResult;
     }
@@ -443,11 +485,102 @@ class RideService {
   }
 
   Future<RideEtaResult> fetchRideEta({required String rideId}) async {
-    final raw = await _supabase.rpc(
-      'get_ride_eta',
-      params: {'p_viaje_id': rideId},
-    );
+    final accessToken = _supabase.auth.currentSession?.accessToken;
 
+    try {
+      final response = await _supabase.functions.invoke(
+        'ride-eta',
+        body: {'ride_id': rideId},
+        headers: accessToken == null || accessToken.isEmpty
+            ? null
+            : {'Authorization': 'Bearer $accessToken'},
+      );
+
+      final edgeResult = _parseRideEtaFromRaw(response.data, strict: true);
+      if (edgeResult.available) {
+        return edgeResult;
+      }
+    } catch (_) {
+      // Ignore and fallback to RPC to avoid leaving the client without ETA.
+    }
+
+    try {
+      final raw = await _supabase.rpc(
+        'get_ride_eta',
+        params: {'p_viaje_id': rideId},
+      );
+      return _parseRideEtaFromRaw(raw, strict: false);
+    } catch (_) {
+      return RideEtaResult.unavailable();
+    }
+  }
+
+  Future<RideEtaResult> fetchRideEtaFromDetail(
+    Map<String, dynamic> rideDetail,
+  ) async {
+    final originLat = _parseDouble(rideDetail['origen_lat']);
+    final originLng = _parseDouble(rideDetail['origen_lng']);
+    final driverLat = _parseDouble(rideDetail['driver_lat']);
+    final driverLng = _parseDouble(rideDetail['driver_lng']);
+
+    if (originLat == null ||
+        originLng == null ||
+        driverLat == null ||
+        driverLng == null) {
+      return RideEtaResult.unavailable();
+    }
+
+    final googleMapsApiKey = dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
+
+    if (googleMapsApiKey.isNotEmpty) {
+      try {
+        final uri =
+            Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
+              'origin': '$driverLat,$driverLng',
+              'destination': '$originLat,$originLng',
+              'mode': 'driving',
+              'language': 'es',
+              'key': googleMapsApiKey,
+            });
+
+        final response = await http.get(uri);
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body) as Map<String, dynamic>;
+          if ((data['status'] as String?) == 'OK') {
+            final routes = data['routes'] as List<dynamic>?;
+            final route = routes != null && routes.isNotEmpty
+                ? routes.first as Map<String, dynamic>
+                : null;
+            final legs = route?['legs'] as List<dynamic>?;
+            final leg = legs != null && legs.isNotEmpty
+                ? legs.first as Map<String, dynamic>
+                : null;
+            final duration = leg?['duration'] as Map<String, dynamic>?;
+            final durationSeconds = double.tryParse(
+              duration?['value']?.toString() ?? '',
+            );
+
+            if (durationSeconds != null && durationSeconds > 0) {
+              return RideEtaResult(
+                available: true,
+                etaMin: (durationSeconds / 60).ceil(),
+                updatedAt: DateTime.now(),
+              );
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    final distanceKm = _haversineKm(driverLat, driverLng, originLat, originLng);
+    return RideEtaResult(
+      available: true,
+      etaMin: (distanceKm / 0.45).ceil().clamp(1, 9999),
+      updatedAt: DateTime.now(),
+    );
+  }
+
+  RideEtaResult _parseRideEtaFromRaw(dynamic raw, {required bool strict}) {
     Map<String, dynamic>? data;
 
     if (raw is List && raw.isNotEmpty) {
@@ -456,29 +589,43 @@ class RideService {
       data = Map<String, dynamic>.from(raw);
     }
 
-    if (data == null) {
-      return RideEtaResult.unavailable();
-    }
+    if (data == null) return RideEtaResult.unavailable();
 
     final etaMin = int.tryParse(data['eta_min']?.toString() ?? '');
-    final distanceKm = double.tryParse(data['distancia_km']?.toString() ?? '');
-    final lat = double.tryParse(data['taxista_lat']?.toString() ?? '');
-    final lng = double.tryParse(data['taxista_lng']?.toString() ?? '');
     final updatedAtRaw = data['ubicacion_actualizada_en']?.toString();
 
-    if (etaMin == null || distanceKm == null || lat == null || lng == null) {
+    if (etaMin == null) return RideEtaResult.unavailable();
+
+    if (strict && data['available'] != true) {
       return RideEtaResult.unavailable();
     }
 
     return RideEtaResult(
       available: true,
       etaMin: etaMin,
-      distanceKm: distanceKm,
-      taxistaLat: lat,
-      taxistaLng: lng,
       updatedAt: _parseBackendTimestamp(updatedAtRaw),
     );
   }
+
+  double? _parseDouble(dynamic value) {
+    if (value == null) return null;
+    return double.tryParse(value.toString());
+  }
+
+  double _haversineKm(double lat1, double lng1, double lat2, double lng2) {
+    const earthRadiusKm = 6371.0;
+    final dLat = _degToRad(lat2 - lat1);
+    final dLng = _degToRad(lng2 - lng1);
+    final a =
+        (sin(dLat / 2) * sin(dLat / 2)) +
+        cos(_degToRad(lat1)) *
+            cos(_degToRad(lat2)) *
+            (sin(dLng / 2) * sin(dLng / 2));
+    final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    return earthRadiusKm * c;
+  }
+
+  double _degToRad(double deg) => deg * (3.1415926535897932 / 180.0);
 
   DateTime? _parseBackendTimestamp(String? rawValue) {
     if (rawValue == null || rawValue.trim().isEmpty) return null;
@@ -494,5 +641,38 @@ class RideService {
     );
 
     return parsed?.toLocal();
+  }
+
+  Future<Map<String, dynamic>> fetchRideDetail(String rideId) async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      throw Exception('No hay usuario autenticado');
+    }
+
+    // Try as client first
+    try {
+      final response = await _supabase.rpc(
+        'get_ride_detail_client',
+        params: {'p_viaje_id': rideId, 'p_cliente_id': user.id},
+      );
+
+      if (response is List && response.isNotEmpty) {
+        return Map<String, dynamic>.from(response.first);
+      }
+    } catch (_) {}
+
+    // Try as driver
+    try {
+      final response = await _supabase.rpc(
+        'get_ride_detail_driver',
+        params: {'p_viaje_id': rideId, 'p_driver_id': user.id},
+      );
+
+      if (response is List && response.isNotEmpty) {
+        return Map<String, dynamic>.from(response.first);
+      }
+    } catch (_) {}
+
+    throw Exception('No se pudo cargar el viaje');
   }
 }

@@ -7,6 +7,20 @@ class RatingService {
 
   final SupabaseClient _supabase;
 
+  Future<void> _sendPushNotification({
+    required String userId,
+    required String title,
+    required String body,
+    Map<String, dynamic>? data,
+  }) async {
+    try {
+      await _supabase.functions.invoke(
+        'send-notification',
+        body: {'user_id': userId, 'title': title, 'body': body, 'data': data},
+      );
+    } catch (_) {}
+  }
+
   /// Submit a rating for a completed ride
   /// Returns SubmitRatingResult with success status and rating ID if successful
   Future<SubmitRatingResult> submitRating({
@@ -56,7 +70,20 @@ class RatingService {
       // response should be a list with one element [{ success, message, rating_id }]
       if (response is List && response.isNotEmpty) {
         final result = response[0] as Map<String, dynamic>;
-        return SubmitRatingResult.fromMap(result);
+        final submitResult = SubmitRatingResult.fromMap(result);
+
+        // Send notification to taxista about the rating
+        if (submitResult.success) {
+          final ratingTypeText = tipo == RatingType.positiva ? 'positiva' : 'negativa';
+          await _sendPushNotification(
+            userId: taxistaId,
+            title: 'Nueva valoración recibida',
+            body: 'Has recibido una valoración $ratingTypeText en tu viaje',
+            data: {'viaje_id': viajeId, 'tipo': 'valoracion_recibida'},
+          );
+        }
+
+        return submitResult;
       }
 
       return const SubmitRatingResult(

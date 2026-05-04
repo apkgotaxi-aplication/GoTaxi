@@ -12,6 +12,17 @@ import 'package:gotaxi/data/services/favorites_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:gotaxi/utils/places_autocomplete_service.dart';
 
+bool shouldShowAutocompleteSuggestions({
+  required bool fieldHasFocus,
+  required String input,
+  required String defaultOriginText,
+}) {
+  final normalizedInput = input.trim().toLowerCase();
+  return fieldHasFocus &&
+      normalizedInput.isNotEmpty &&
+      normalizedInput != defaultOriginText.toLowerCase();
+}
+
 class MapTab extends StatefulWidget {
   const MapTab({super.key, this.onRideRequested});
 
@@ -103,6 +114,18 @@ class _MapTabState extends State<MapTab> {
   void _onOriginChanged() {
     _originDebounce?.cancel();
     _originDebounce = Timer(const Duration(milliseconds: 400), () {
+      if (!shouldShowAutocompleteSuggestions(
+        fieldHasFocus: _originFocusNode.hasFocus,
+        input: _originController.text,
+        defaultOriginText: _defaultOriginText,
+      )) {
+        if (!mounted) return;
+        setState(() {
+          _originSuggestions = [];
+          _showOriginSuggestions = false;
+        });
+        return;
+      }
       _fetchOriginSuggestions(_originController.text);
     });
   }
@@ -110,6 +133,18 @@ class _MapTabState extends State<MapTab> {
   void _onDestinationChanged() {
     _destinationDebounce?.cancel();
     _destinationDebounce = Timer(const Duration(milliseconds: 400), () {
+      if (!shouldShowAutocompleteSuggestions(
+        fieldHasFocus: _destinationFocusNode.hasFocus,
+        input: _destinationController.text,
+        defaultOriginText: _defaultOriginText,
+      )) {
+        if (!mounted) return;
+        setState(() {
+          _destinationSuggestions = [];
+          _showDestinationSuggestions = false;
+        });
+        return;
+      }
       _fetchDestinationSuggestions(_destinationController.text);
     });
   }
@@ -541,6 +576,11 @@ class _MapTabState extends State<MapTab> {
           );
         _loading = false;
       });
+
+      // Get real address for origin
+      if (_originController.text.trim() == _defaultOriginText) {
+        _updateOriginAddress(_currentPosition!);
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -735,6 +775,42 @@ class _MapTabState extends State<MapTab> {
     }
   }
 
+  Future<String> _getFullAddress(LatLng origin) async {
+    try {
+      final placemarks = await placemarkFromCoordinates(
+        origin.latitude,
+        origin.longitude,
+      );
+      if (placemarks.isEmpty) return '${origin.latitude},${origin.longitude}';
+      final place = placemarks.first;
+      final street = place.street ?? '';
+      final locality = place.locality ?? '';
+      if (street.isNotEmpty && locality.isNotEmpty) {
+        return '$street, $locality';
+      } else if (street.isNotEmpty) {
+        return street;
+      } else if (locality.isNotEmpty) {
+        return locality;
+      }
+      return '${origin.latitude},${origin.longitude}';
+    } catch (_) {
+      return '${origin.latitude},${origin.longitude}';
+    }
+  }
+
+  Future<void> _updateOriginAddress(LatLng origin) async {
+    final address = await _getFullAddress(origin);
+    if (!mounted) return;
+    _originDebounce?.cancel();
+    _originController.removeListener(_onOriginChanged);
+    _originController.text = address;
+    _originController.addListener(_onOriginChanged);
+    setState(() {
+      _showOriginSuggestions = false;
+      _originSuggestions = [];
+    });
+  }
+
   Future<void> _createRide({required bool isReservation}) async {
     if (_loadingRoute || _requestingRide) return;
 
@@ -779,10 +855,15 @@ class _MapTabState extends State<MapTab> {
       final duracionMinutos = (durationSeconds / 60).round();
       final distanciaKm = distanceMeters / 1000;
 
+      // Get real address if using "Mi ubicación actual"
+      final origenText = _originController.text.trim();
+      final origenFinal =
+          (origenText.isEmpty || origenText == _defaultOriginText)
+          ? await _getFullAddress(origin)
+          : origenText;
+
       final result = await _rideService.createRideAssignment(
-        origen: _originController.text.trim().isEmpty
-            ? '${origin.latitude},${origin.longitude}'
-            : _originController.text.trim(),
+        origen: origenFinal,
         destino: _destinationController.text.trim(),
         origenLat: origin.latitude,
         origenLng: origin.longitude,
