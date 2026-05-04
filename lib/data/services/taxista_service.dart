@@ -374,6 +374,7 @@ class TaxistaService {
           'usuarios!inner(nombre, apellidos, email, telefono, dni), '
           'vehiculos!inner(licencia_taxi, matricula, marca, modelo, color, capacidad, minusvalido)',
         )
+        .eq('activo', true) // Filtrar solo taxistas activos (soft delete)
         .order('created_at', ascending: false);
 
     return List<Map<String, dynamic>>.from(response);
@@ -404,7 +405,7 @@ class TaxistaService {
 
     final taxista = await _supabase
         .from('taxistas')
-        .select('vehiculo_id')
+        .select('id')
         .eq('id', taxistaId)
         .maybeSingle();
 
@@ -412,16 +413,16 @@ class TaxistaService {
       throw Exception('Taxista no encontrado');
     }
 
-    final vehiculoId = taxista['vehiculo_id'] as int;
-
-    // Eliminar registro de taxistas
-    await _supabase.from('taxistas').delete().eq('id', taxistaId);
-
-    // Eliminar vehículo
-    await _supabase.from('vehiculos').delete().eq('id', vehiculoId);
-
-    // Eliminar usuario
-    await _supabase.from('usuarios').delete().eq('id', taxistaId);
+    // Soft delete: desactivar taxista en lugar de eliminar
+    // Esto mantiene datos históricos de viajes pero impide login y muestra en admin
+    await _supabase
+        .from('taxistas')
+        .update({
+          'activo': false,
+          'estado': 'no disponible',
+          'updated_at': DateTime.now().toIso8601String(),
+        })
+        .eq('id', taxistaId);
   }
 
   Future<DriverDashboardData> getDriverDashboardData({int limit = 3}) async {
