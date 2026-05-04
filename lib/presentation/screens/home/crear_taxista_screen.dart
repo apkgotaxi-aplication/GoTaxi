@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:gotaxi/data/services/google_places_location_service.dart';
 import 'package:gotaxi/data/services/taxista_service.dart';
 import 'package:gotaxi/domain/validators/dni_validator.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 class CrearTaxistaScreen extends StatefulWidget {
   const CrearTaxistaScreen({super.key});
@@ -273,25 +272,10 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
         );
         Navigator.pop(context);
       }
-    } on AuthException catch (e) {
-      if (mounted) {
-        final mapped = _mapCreateTaxistaError(e.message);
-        _applyBackendFieldError(field: mapped.field, message: mapped.message);
-      }
-    } on PostgrestException catch (e) {
-      if (mounted) {
-        final rawError = [
-          e.code,
-          e.message,
-          e.details,
-          e.hint,
-        ].whereType<String>().join(' ');
-        final mapped = _mapCreateTaxistaError(rawError);
-        _applyBackendFieldError(field: mapped.field, message: mapped.message);
-      }
     } catch (e) {
       if (mounted) {
-        final mapped = _mapCreateTaxistaError(e.toString());
+        final errorString = e.toString();
+        final mapped = _mapCreateTaxistaError(errorString);
         _applyBackendFieldError(field: mapped.field, message: mapped.message);
       }
     } finally {
@@ -375,11 +359,11 @@ class _CrearTaxistaScreenState extends State<CrearTaxistaScreen> {
     final error = rawError.toLowerCase();
 
     if (error.contains('user already registered') ||
-        error.contains('already registered')) {
+        error.contains('already registered') ||
+        error.contains('user_already_registered')) {
       return (
         field: 'email',
-        message:
-            'Campo Email: este correo ya existe en autenticación. Se intentará reutilizar para crear el taxista.',
+        message: 'Campo Email: ya existe un usuario con ese correo.',
       );
     }
 
