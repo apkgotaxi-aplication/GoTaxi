@@ -6,6 +6,8 @@ import './presentation/screens/auth/auth_screen.dart';
 import './presentation/screens/home/home_screen.dart';
 import './data/services/notification_service.dart';
 
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: '.env');
@@ -35,6 +37,7 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'GoTaxi',
       theme: ThemeData.dark(),
+      navigatorKey: navigatorKey,
       home: const SplashScreen(),
     );
   }

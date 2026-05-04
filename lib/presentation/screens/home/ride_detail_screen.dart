@@ -1,13 +1,52 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:gotaxi/data/services/app_links_service.dart';
 import 'package:gotaxi/data/services/ride_service.dart';
 import 'package:gotaxi/data/services/stripe_payment_service.dart';
 import 'package:gotaxi/data/services/rating_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:gotaxi/models/rating_model.dart';
 import 'package:gotaxi/utils/profile/rides/ride_history_utils.dart';
 import 'package:gotaxi/utils/ratings/rating_utils.dart';
+
+bool shouldEnableRidePaymentButton({
+  required bool isDriverView,
+  required bool isPaying,
+  required bool waitingStripeReturn,
+  required bool isPaid,
+  required String rideState,
+}) {
+  return !isDriverView &&
+      !isPaying &&
+      !waitingStripeReturn &&
+      rideState == 'en_curso' &&
+      !isPaid;
+}
+
+bool shouldShowRideMap(String rideState) {
+  return normalizeRideState(rideState) == 'confirmada';
+}
+
+bool shouldPollStripePayment({
+  required String rideState,
+  required bool waitingStripeReturn,
+}) {
+  return waitingStripeReturn && normalizeRideState(rideState) == 'en_curso';
+}
+
+String? extractStripeCheckoutSessionId(Uri uri) {
+  final keys = ['session_id', 'checkout_session_id', 'sessionId'];
+  for (final key in keys) {
+    final value = uri.queryParameters[key];
+    if (value != null && value.trim().isNotEmpty) {
+      return value.trim();
+    }
+  }
+  return null;
+}
 
 class RideDetailScreen extends StatefulWidget {
   const RideDetailScreen({
@@ -21,8 +60,92 @@ class RideDetailScreen extends StatefulWidget {
   final Map<String, dynamic> initialRide;
   final bool isDriverView;
 
+  /// Factory constructor for navigation from notifications when we don't have initialRide
+  static Future<void> openFromNotification(
+    BuildContext context,
+    String rideId,
+  ) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => RideDetailScreenFromNotification(rideId: rideId),
+      ),
+    );
+  }
+
   @override
   State<RideDetailScreen> createState() => _RideDetailScreenState();
+}
+
+class RideDetailScreenFromNotification extends StatefulWidget {
+  const RideDetailScreenFromNotification({super.key, required this.rideId});
+
+  final String rideId;
+
+  @override
+  State<RideDetailScreenFromNotification> createState() =>
+      _RideDetailScreenFromNotificationState();
+}
+
+class _RideDetailScreenFromNotificationState
+    extends State<RideDetailScreenFromNotification> {
+  Map<String, dynamic>? _ride;
+  bool _isLoading = true;
+  String? _errorMessage;
+  final RideService _rideService = RideService();
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchRideDetail();
+  }
+
+  Future<void> _fetchRideDetail() async {
+    setState(() => _isLoading = true);
+    try {
+      final ride = await _rideService.fetchRideDetail(widget.rideId);
+      if (!mounted) return;
+      setState(() {
+        _ride = ride;
+        _isLoading = false;
+        _errorMessage = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Error: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    if (_errorMessage != null || _ride == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Error')),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('No se pudo cargar el viaje'),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: _fetchRideDetail,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reintentar'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return RideDetailScreen(rideId: widget.rideId, initialRide: _ride!);
+  }
 }
 
 class _RideDetailScreenState extends State<RideDetailScreen>
@@ -31,29 +154,52 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   final StripePaymentService _stripePaymentService = StripePaymentService();
   final RatingService _ratingService = RatingService();
 
-  late Future<Map<String, dynamic>> _detailFuture;
+  // Single source of truth for ride state
+  Map<String, dynamic>? _ride;
+  bool _isLoading = false;
+  String? _errorMessage;
+
+  // UI state
   bool _isCancelling = false;
   bool _isPaying = false;
   bool _waitingStripeReturn = false;
   bool _checkingPaymentStatus = false;
   bool _optimisticPaidUntilSync = false;
-  bool _refreshInProgress = false;
   bool _isRated = false;
   bool _ratingInProgress = false;
+
+  // Realtime state
+  bool _isRealtimeConnected = false;
+  bool _isUpdatingRide = false;
+  bool _isRideFinalized = false;
+  DateTime? _lastRideUpdateTime;
+
+  // ETA state
   int? _etaMinutes;
-  double? _etaDistanceKm;
   DateTime? _etaUpdatedAt;
   DateTime? _etaArrivalAt;
+
+  // Subscriptions and timers
   StreamSubscription<Uri>? _deepLinkSubscription;
   Timer? _refreshTimer;
   Timer? _etaTimer;
+  Timer? _stripePaymentPollingTimer;
   String? _pendingCheckoutSessionId;
+
+  // Map for driver location
+  GoogleMapController? _mapController;
+  final Set<Marker> _markers = <Marker>{};
+  double? _driverLat;
+  double? _driverLng;
+  double? _originLat;
+  double? _originLng;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _detailFuture = _fetchRideDetail();
+    _ride = widget.initialRide;
+    _fetchInitialRide();
     unawaited(_tryAutoSyncPendingPayment());
     unawaited(_checkRatingStatus());
     _startAutoRefresh();
@@ -62,64 +208,268 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     );
   }
 
+  Future<void> _fetchInitialRide() async {
+    setState(() => _isLoading = true);
+    try {
+      final ride = await _fetchRideDetail();
+      if (!mounted) return;
+      setState(() {
+        _ride = _mergeRideDetail(ride);
+        _isLoading = false;
+        _errorMessage = null;
+        _updateRideFinalizedState();
+      });
+      // Initialize ETA if needed
+      if (_ride != null) {
+        final state = normalizeRideState(_ride!['estado']);
+        if (state == 'confirmada' || state == 'en_curso') {
+          unawaited(_refreshEta(_ride!));
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Error: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _updateRideFinalizedState() {
+    if (_ride == null) return;
+    final state = normalizeRideState(_ride!['estado']);
+    _isRideFinalized = state == 'finalizada' || state == 'cancelada';
+  }
+
   @override
   void dispose() {
     _refreshTimer?.cancel();
     _etaTimer?.cancel();
+    _stripePaymentPollingTimer?.cancel();
     _deepLinkSubscription?.cancel();
+    _realtimeCheckTimer?.cancel();
+    _mapController?.dispose();
+    _rideRealtimeChannel?.unsubscribe();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
+  RealtimeChannel? _rideRealtimeChannel;
+
   void _startAutoRefresh() {
-    if (widget.isDriverView) return;
-    _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => unawaited(_refreshDetailAndEta()),
-    );
-    unawaited(_refreshDetailAndEta());
+    _startRideRealtimeSync();
   }
 
   void _handleStripeDeepLink(Uri uri) {
     if (uri.scheme != 'gotaxi' || uri.host != 'stripe') return;
     final isSuccess = uri.path.contains('success');
     final isCancel = uri.path.contains('cancel');
-    final sessionId = uri.queryParameters['session_id'];
+    final sessionId = extractStripeCheckoutSessionId(uri);
     if (!isSuccess && !isCancel) return;
     if (isCancel) {
       if (!mounted) return;
+      _stopStripePaymentPolling();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Pago cancelado en Stripe.')),
       );
-      _optimisticPaidUntilSync = false;
-      _waitingStripeReturn = false;
-      _pendingCheckoutSessionId = null;
+      setState(() {
+        _optimisticPaidUntilSync = false;
+        _waitingStripeReturn = false;
+        _pendingCheckoutSessionId = null;
+      });
       return;
     }
-    _pendingCheckoutSessionId = sessionId;
-    _waitingStripeReturn = true;
     if (!mounted) return;
+    setState(() {
+      _pendingCheckoutSessionId = sessionId;
+      _waitingStripeReturn = true;
+    });
+    _startStripePaymentPolling(checkoutSessionId: sessionId);
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Volviendo de Stripe. Verificando el pago...'),
       ),
     );
-    unawaited(_checkPaymentAfterStripeReturn());
+    unawaited(_pollStripePaymentStatus(sessionId));
+  }
+
+  Timer? _realtimeCheckTimer;
+  DateTime? _lastRealtimeEventTime;
+
+  void _startRideRealtimeSync() {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    _rideRealtimeChannel?.unsubscribe();
+    _rideRealtimeChannel = Supabase.instance.client.channel(
+      'ride-detail-${widget.rideId}',
+    );
+
+    // Listen to INSERT events
+    _rideRealtimeChannel!.onPostgresChanges(
+      event: PostgresChangeEvent.insert,
+      schema: 'public',
+      table: 'viajes',
+      filter: PostgresChangeFilter(
+        type: PostgresChangeFilterType.eq,
+        column: 'id',
+        value: widget.rideId,
+      ),
+      callback: _handleRealtimeUpdate,
+    );
+
+    // Listen to UPDATE events
+    _rideRealtimeChannel!.onPostgresChanges(
+      event: PostgresChangeEvent.update,
+      schema: 'public',
+      table: 'viajes',
+      filter: PostgresChangeFilter(
+        type: PostgresChangeFilterType.eq,
+        column: 'id',
+        value: widget.rideId,
+      ),
+      callback: _handleRealtimeUpdate,
+    );
+
+    // Listen to DELETE events
+    _rideRealtimeChannel!.onPostgresChanges(
+      event: PostgresChangeEvent.delete,
+      schema: 'public',
+      table: 'viajes',
+      filter: PostgresChangeFilter(
+        type: PostgresChangeFilterType.eq,
+        column: 'id',
+        value: widget.rideId,
+      ),
+      callback: _handleRealtimeUpdate,
+    );
+
+    _rideRealtimeChannel!.subscribe();
+    setState(() => _isRealtimeConnected = true);
+    _lastRealtimeEventTime = DateTime.now();
+
+    // Start periodic check for realtime connection
+    _startRealtimeConnectionCheck();
+  }
+
+  void _startRealtimeConnectionCheck() {
+    _realtimeCheckTimer?.cancel();
+    _realtimeCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!mounted || _isRideFinalized) return;
+      // If no realtime events for a while, try to reconnect
+      final now = DateTime.now();
+      if (_lastRealtimeEventTime != null &&
+          now.difference(_lastRealtimeEventTime!) >
+              const Duration(minutes: 2)) {
+        setState(() => _isRealtimeConnected = false);
+        _startRideRealtimeSync();
+      }
+    });
+  }
+
+  void _handleRealtimeUpdate(PostgresChangePayload payload) {
+    if (!mounted) return;
+    _lastRealtimeEventTime = DateTime.now();
+
+    switch (payload.eventType) {
+      case PostgresChangeEvent.insert:
+      case PostgresChangeEvent.update:
+        final updatedFields = Map<String, dynamic>.from(payload.newRecord);
+        unawaited(_updateRideSafely(updatedFields));
+        break;
+      case PostgresChangeEvent.delete:
+        if (!mounted) return;
+        Navigator.of(context).pop();
+        break;
+      default:
+        break;
+    }
+  }
+
+  Future<void> _updateRideSafely(Map<String, dynamic> newData) async {
+    if (_isUpdatingRide) return;
+    _isUpdatingRide = true;
+    try {
+      final newUpdateTime = DateTime.tryParse(
+        newData['updated_at']?.toString() ?? '',
+      );
+      if (newUpdateTime != null &&
+          _lastRideUpdateTime != null &&
+          newUpdateTime.isBefore(_lastRideUpdateTime!)) {
+        return;
+      }
+      if (!mounted) return;
+      setState(() {
+        _ride = {...?_ride, ...newData};
+        _lastRideUpdateTime = newUpdateTime;
+        _updateRideFinalizedState();
+      });
+      // Check if payment was confirmed via Realtime
+      if (_isRidePaidFromData(_ride!) && _waitingStripeReturn) {
+        _stopStripePaymentPolling();
+        setState(() => _waitingStripeReturn = false);
+      }
+      // Refresh ETA for active rides
+      final state = normalizeRideState(_ride!['estado']);
+      if ((state == 'confirmada' || state == 'en_curso') &&
+          _ride!['driver_lat'] != null) {
+        unawaited(_refreshEta(_ride!));
+        _updateMapPosition();
+      }
+    } finally {
+      _isUpdatingRide = false;
+    }
+  }
+
+  void _updateMapPosition() {
+    if (_driverLat == null || _driverLng == null || _mapController == null)
+      return;
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLng(LatLng(_driverLat!, _driverLng!)),
+    );
+    if (_originLat != null && _originLng != null) {
+      _mapController!.animateCamera(
+        CameraUpdate.newLatLngBounds(
+          LatLngBounds(
+            southwest: LatLng(
+              _driverLat! < _originLat! ? _driverLat! : _originLat!,
+              _driverLng! < _originLng! ? _driverLng! : _originLng!,
+            ),
+            northeast: LatLng(
+              _driverLat! > _originLat! ? _driverLat! : _originLat!,
+              _driverLng! > _originLng! ? _driverLng! : _originLng!,
+            ),
+          ),
+          50,
+        ),
+      );
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _waitingStripeReturn) {
-      unawaited(_checkPaymentAfterStripeReturn());
-      return;
+    if (state == AppLifecycleState.resumed &&
+        !_isRealtimeConnected &&
+        !_isRideFinalized) {
+      _startRideRealtimeSync();
     }
-    if (state == AppLifecycleState.resumed)
+    if (state == AppLifecycleState.resumed && _waitingStripeReturn) {
+      _startStripePaymentPolling(checkoutSessionId: _pendingCheckoutSessionId);
+      unawaited(_pollStripePaymentStatus(_pendingCheckoutSessionId));
       unawaited(
         _tryAutoSyncPendingPayment(
           checkoutSessionId: _pendingCheckoutSessionId,
         ),
       );
+      return;
+    }
+    if (state == AppLifecycleState.resumed) {
+      unawaited(
+        _tryAutoSyncPendingPayment(
+          checkoutSessionId: _pendingCheckoutSessionId,
+        ),
+      );
+    }
   }
 
   Future<Map<String, dynamic>> _fetchRideDetail() {
@@ -129,7 +479,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   }
 
   bool _isRidePaidFromData(Map<String, dynamic> detail) {
-    if (detail['pagado'] == true) return true;
+    if (normalizeRidePaymentStatus(detail['pagado'])) return true;
     final stripeStatus = detail['stripe_payment_status']
         ?.toString()
         .toLowerCase()
@@ -142,61 +492,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   bool _isRidePaid(Map<String, dynamic> detail) =>
       _optimisticPaidUntilSync || _isRidePaidFromData(detail);
 
-  Map<String, dynamic> _withOptimisticPaid(Map<String, dynamic> detail) {
-    if (!_optimisticPaidUntilSync || _isRidePaidFromData(detail)) return detail;
-    return Map<String, dynamic>.from(detail)
-      ..['pagado'] = true
-      ..['stripe_payment_status'] = 'succeeded';
-  }
-
-  Future<void> _checkPaymentAfterStripeReturn() async {
-    if (_checkingPaymentStatus) return;
-    _checkingPaymentStatus = true;
-    try {
-      for (var attempt = 0; attempt < 10; attempt++) {
-        if (!mounted) return;
-        final checkoutSessionId = _pendingCheckoutSessionId;
-        if (checkoutSessionId == null || checkoutSessionId.isEmpty) {
-          break;
-        }
-        try {
-          await _stripePaymentService.syncRidePaymentStatus(
-            rideId: widget.rideId,
-            checkoutSessionId: checkoutSessionId,
-          );
-        } catch (_) {}
-        final latest = await _fetchRideDetail();
-        if (!mounted) return;
-        final confirmedPaid = _isRidePaidFromData(latest);
-        setState(
-          () => _detailFuture = Future<Map<String, dynamic>>.value(latest),
-        );
-        if (confirmedPaid) {
-          _optimisticPaidUntilSync = false;
-          _waitingStripeReturn = false;
-          _pendingCheckoutSessionId = null;
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Pago confirmado correctamente.')),
-          );
-          return;
-        }
-        if (attempt < 9) await Future<void>.delayed(const Duration(seconds: 2));
-      }
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Aun no se confirma el pago. Reintentaremos la sincronizacion en breve.',
-          ),
-        ),
-      );
-    } catch (_) {
-    } finally {
-      _checkingPaymentStatus = false;
-    }
-  }
-
   Future<void> _tryAutoSyncPendingPayment({String? checkoutSessionId}) async {
     if (widget.isDriverView || _checkingPaymentStatus) return;
     try {
@@ -206,9 +501,8 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       final isPendingInProgress =
           rideState == 'en_curso' && !_isRidePaidFromData(current);
       if (!isPendingInProgress) {
-        setState(
-          () => _detailFuture = Future<Map<String, dynamic>>.value(current),
-        );
+        if (!mounted) return;
+        setState(() => _ride = _mergeRideDetail(current));
         return;
       }
       try {
@@ -222,55 +516,86 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       if (_isRidePaidFromData(refreshed)) {
         _optimisticPaidUntilSync = false;
       }
-      setState(
-        () => _detailFuture = Future<Map<String, dynamic>>.value(refreshed),
-      );
+      setState(() => _ride = _mergeRideDetail(refreshed));
     } catch (_) {}
   }
 
-  Future<void> _reload() async => await _refreshDetailAndEta();
+  void _startStripePaymentPolling({String? checkoutSessionId}) {
+    _stripePaymentPollingTimer?.cancel();
+    _stripePaymentPollingTimer = Timer.periodic(const Duration(seconds: 5), (
+      _,
+    ) {
+      if (!mounted || !_waitingStripeReturn) {
+        _stopStripePaymentPolling();
+        return;
+      }
+      unawaited(_pollStripePaymentStatus(checkoutSessionId));
+    });
+  }
 
-  Future<void> _refreshDetailAndEta() async {
-    if (_refreshInProgress) return;
-    _refreshInProgress = true;
+  void _stopStripePaymentPolling() {
+    _stripePaymentPollingTimer?.cancel();
+    _stripePaymentPollingTimer = null;
+  }
+
+  Future<void> _pollStripePaymentStatus(String? checkoutSessionId) async {
+    if (_checkingPaymentStatus) return;
+    _checkingPaymentStatus = true;
     try {
+      try {
+        await _stripePaymentService.syncRidePaymentStatus(
+          rideId: widget.rideId,
+          checkoutSessionId: checkoutSessionId,
+        );
+      } catch (_) {}
       final latest = await _fetchRideDetail();
       if (!mounted) return;
-      final displayDetail = _withOptimisticPaid(latest);
-      final state = normalizeRideState(latest['estado']);
-      setState(
-        () => _detailFuture = Future<Map<String, dynamic>>.value(displayDetail),
-      );
-      if (state == 'confirmada') {
-        await _refreshEta();
-      } else {
-        if (!mounted) return;
-        setState(() {
-          _etaMinutes = null;
-          _etaDistanceKm = null;
-          _etaUpdatedAt = null;
-          _etaArrivalAt = null;
-        });
-        _stopEtaTicker();
+      final confirmedPaid = _isRidePaidFromData(latest);
+      final rideState = normalizeRideState(latest['estado']);
+      setState(() => _ride = _mergeRideDetail(latest));
+      if (confirmedPaid || rideState != 'en_curso') {
+        _waitingStripeReturn = false;
+        _pendingCheckoutSessionId = null;
+        _stopStripePaymentPolling();
+        if (confirmedPaid && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Pago confirmado correctamente.')),
+          );
+        }
       }
     } catch (_) {
     } finally {
-      _refreshInProgress = false;
+      _checkingPaymentStatus = false;
     }
   }
 
-  Future<void> _refreshEta() async {
+  Future<void> _refreshEta(Map<String, dynamic> rideDetail) async {
     try {
-      final result = await _rideService.fetchRideEta(rideId: widget.rideId);
+      final result = await _rideService.fetchRideEtaFromDetail(rideDetail);
       if (!mounted) return;
       if (!result.available || result.etaMin == null) {
+        final fallback = await _rideService.fetchRideEta(rideId: widget.rideId);
+        if (!mounted) return;
+        if (fallback.available && fallback.etaMin != null) {
+          final fallbackUpdatedAt = fallback.updatedAt?.toLocal();
+          final fallbackArrivalAt = fallbackUpdatedAt?.add(
+            Duration(minutes: fallback.etaMin!),
+          );
+          setState(() {
+            _etaMinutes = fallback.etaMin;
+            _etaUpdatedAt = fallbackUpdatedAt;
+            _etaArrivalAt = fallbackArrivalAt;
+          });
+          _startEtaTicker();
+          return;
+        }
+
         if (_etaUpdatedAt != null && _etaArrivalAt != null) {
           _startEtaTicker();
           return;
         }
         setState(() {
           _etaMinutes = null;
-          _etaDistanceKm = null;
           _etaUpdatedAt = null;
           _etaArrivalAt = null;
         });
@@ -281,7 +606,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       final arrivalAt = updatedAt?.add(Duration(minutes: result.etaMin!));
       setState(() {
         _etaMinutes = result.etaMin;
-        _etaDistanceKm = result.distanceKm;
         _etaUpdatedAt = updatedAt;
         _etaArrivalAt = arrivalAt;
       });
@@ -294,7 +618,6 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       }
       setState(() {
         _etaMinutes = null;
-        _etaDistanceKm = null;
         _etaUpdatedAt = null;
         _etaArrivalAt = null;
       });
@@ -315,21 +638,63 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     _etaTimer = null;
   }
 
+  Map<String, dynamic> _mergeRideDetail(Map<String, dynamic> detail) {
+    return {...widget.initialRide, ...detail};
+  }
+
+  int? _estimateEtaMinutes(Map<String, dynamic> detail) {
+    final originLat = _parseDouble(detail['origen_lat']);
+    final originLng = _parseDouble(detail['origen_lng']);
+    final driverLat = _parseDouble(detail['driver_lat']);
+    final driverLng = _parseDouble(detail['driver_lng']);
+
+    if (originLat == null ||
+        originLng == null ||
+        driverLat == null ||
+        driverLng == null) {
+      return null;
+    }
+
+    final distanceKm = _haversineKm(driverLat, driverLng, originLat, originLng);
+    return (distanceKm / 0.45).ceil().clamp(1, 9999);
+  }
+
+  double? _parseDouble(dynamic value) {
+    if (value == null) return null;
+    return double.tryParse(value.toString());
+  }
+
+  double _haversineKm(double lat1, double lng1, double lat2, double lng2) {
+    const earthRadiusKm = 6371.0;
+    final dLat = _degToRad(lat2 - lat1);
+    final dLng = _degToRad(lng2 - lng1);
+    final a =
+        (sin(dLat / 2) * sin(dLat / 2)) +
+        cos(_degToRad(lat1)) *
+            cos(_degToRad(lat2)) *
+            (sin(dLng / 2) * sin(dLng / 2));
+    final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    return earthRadiusKm * c;
+  }
+
+  double _degToRad(double deg) => deg * (pi / 180.0);
+
   String _formatDuration(Duration duration) {
     final safeDuration = duration.isNegative ? Duration.zero : duration;
     final hours = safeDuration.inHours;
     final minutes = safeDuration.inMinutes.remainder(60);
     final seconds = safeDuration.inSeconds.remainder(60);
-    if (hours > 0) return '${hours}h ${minutes.toString().padLeft(2, '0')}m';
-    return '${minutes.toString().padLeft(2, '0')}m ${seconds.toString().padLeft(2, '0')}s';
+    if (hours > 0) return '${hours}h ${minutes.toString().padLeft(2, "0")}m';
+    return '${minutes.toString().padLeft(2, "0")}m ${seconds.toString().padLeft(2, "0")}s';
   }
 
-  String _buildEtaCountdownText() {
-    final arrivalAt = _etaArrivalAt;
-    if (arrivalAt == null) return 'No disponible';
-    final remaining = arrivalAt.difference(DateTime.now());
-    if (remaining.isNegative || remaining == Duration.zero)
+  String _buildEtaCountdownText([DateTime? arrivalAt]) {
+    final effectiveArrivalAt = arrivalAt ?? _etaArrivalAt;
+    if (effectiveArrivalAt == null) return 'No disponible';
+    final remaining = effectiveArrivalAt.difference(DateTime.now());
+    if (remaining.isNegative || remaining == Duration.zero) {
       return 'Llegada inminente';
+    }
     return _formatDuration(remaining);
   }
 
@@ -338,7 +703,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     final parsed = DateTime.tryParse(rawValue.toString());
     if (parsed == null) return rawValue.toString();
     final local = parsed.toLocal();
-    return '${local.day.toString().padLeft(2, '0')}/${local.month.toString().padLeft(2, '0')}/${local.year} ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    return '${local.day.toString().padLeft(2, "0")}/${local.month.toString().padLeft(2, "0")}/${local.year} ${local.hour.toString().padLeft(2, "0")}:${local.minute.toString().padLeft(2, "0")}';
   }
 
   String _formatPrice(dynamic rawValue) {
@@ -362,8 +727,9 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   String _formatActualDuration(Map<String, dynamic> detail) {
     final start = DateTime.tryParse(detail['fecha_recogida']?.toString() ?? '');
     final end = DateTime.tryParse(detail['fecha_entrega']?.toString() ?? '');
-    if (start == null || end == null || end.isBefore(start))
+    if (start == null || end == null || end.isBefore(start)) {
       return 'No disponible';
+    }
     return _formatMinutes(end.difference(start).inMinutes);
   }
 
@@ -439,10 +805,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(result.message), backgroundColor: color),
       );
-      if (result.success)
+      if (result.success) {
         Navigator.of(
           context,
         ).pop({...detail, 'estado': result.estado ?? 'cancelada'});
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -452,7 +819,9 @@ class _RideDetailScreenState extends State<RideDetailScreen>
         ),
       );
     } finally {
-      if (mounted) setState(() => _isCancelling = false);
+      if (mounted) {
+        setState(() => _isCancelling = false);
+      }
     }
   }
 
@@ -489,8 +858,11 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       }
       await _stripePaymentService.openCheckoutUrl(result.checkoutUrl!);
       _pendingCheckoutSessionId = result.checkoutSessionId;
-      _waitingStripeReturn = true;
       if (!mounted) return;
+      setState(() {
+        _waitingStripeReturn = true;
+      });
+      _startStripePaymentPolling(checkoutSessionId: result.checkoutSessionId);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text(
@@ -516,7 +888,7 @@ class _RideDetailScreenState extends State<RideDetailScreen>
       final result = await _ratingService.checkIfRideRated(widget.rideId);
       if (mounted) setState(() => _isRated = result.isRated);
     } catch (e) {
-      print('Error checking rating status: $e');
+      // Error checking rating status - silently fail
     }
   }
 
@@ -735,13 +1107,14 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     if (_ratingInProgress) return;
     final taxistaId = _resolveTaxistaId(detail);
     if (taxistaId == null) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('No se pudo obtener el ID del taxista'),
             backgroundColor: Colors.red,
           ),
         );
+      }
       return;
     }
     setState(() => _ratingInProgress = true);
@@ -753,7 +1126,9 @@ class _RideDetailScreenState extends State<RideDetailScreen>
         motivo: motivo,
         comentario: comentario,
       );
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       if (result.success) {
         setState(() {
           _isRated = true;
@@ -766,7 +1141,9 @@ class _RideDetailScreenState extends State<RideDetailScreen>
           ),
         );
       } else {
-        setState(() => _ratingInProgress = false);
+        setState(() {
+          _ratingInProgress = false;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(result.message),
@@ -891,29 +1268,116 @@ class _RideDetailScreenState extends State<RideDetailScreen>
     );
   }
 
+  Widget _buildRideMap(
+    String state,
+    ColorScheme colorScheme,
+    Map<String, dynamic> detail,
+  ) {
+    if (!shouldShowRideMap(state)) {
+      return const SizedBox.shrink();
+    }
+    // Use the latest ride detail passed from the builder
+    _driverLat = _parseDouble(detail['driver_lat']) ?? _driverLat;
+    _driverLng = _parseDouble(detail['driver_lng']) ?? _driverLng;
+    _originLat = _parseDouble(detail['origen_lat']) ?? _originLat;
+    _originLng = _parseDouble(detail['origen_lng']) ?? _originLng;
+
+    if (_driverLat == null || _driverLng == null) {
+      return const SizedBox.shrink();
+    }
+
+    // Update markers
+    _markers.clear();
+    _markers.add(
+      Marker(
+        markerId: const MarkerId('taxista'),
+        position: LatLng(_driverLat!, _driverLng!),
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueYellow),
+        infoWindow: const InfoWindow(title: 'Taxista'),
+      ),
+    );
+
+    if (_originLat != null && _originLng != null) {
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('origen'),
+          position: LatLng(_originLat!, _originLng!),
+          infoWindow: const InfoWindow(title: 'Origen'),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 200,
+      child: GoogleMap(
+        onMapCreated: (controller) {
+          _mapController = controller;
+          // Fit map to show both markers
+          if (_originLat != null && _originLng != null) {
+            controller.animateCamera(
+              CameraUpdate.newLatLngBounds(
+                LatLngBounds(
+                  southwest: LatLng(
+                    _driverLat! < _originLat! ? _driverLat! : _originLat!,
+                    _driverLng! < _originLng! ? _driverLng! : _originLng!,
+                  ),
+                  northeast: LatLng(
+                    _driverLat! > _originLat! ? _driverLat! : _originLat!,
+                    _driverLng! > _originLng! ? _driverLng! : _originLng!,
+                  ),
+                ),
+                50,
+              ),
+            );
+          }
+        },
+        initialCameraPosition: CameraPosition(
+          target: LatLng(_driverLat!, _driverLng!),
+          zoom: 14,
+        ),
+        markers: _markers,
+        zoomControlsEnabled: false,
+        myLocationButtonEnabled: false,
+      ),
+    );
+  }
+
   Widget _buildPersonCard({
+    required BuildContext context,
     required String name,
     String? subtitle,
-    required IconData icon,
-    required Color bgColor,
-    required Color iconColor,
+    String? trailing,
+    String? avatarUrl,
+    IconData? icon,
+    Color? bgColor,
+    Color? iconColor,
   }) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: bgColor.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: bgColor.withValues(alpha: 0.3)),
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: colorScheme.outlineVariant.withValues(alpha: 0.3),
+        ),
       ),
       child: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: bgColor.withValues(alpha: 0.2),
-              shape: BoxShape.circle,
+          CircleAvatar(
+            radius: 24,
+            backgroundColor: (bgColor ?? colorScheme.primary).withValues(
+              alpha: 0.1,
             ),
-            child: Icon(icon, size: 20, color: iconColor),
+            backgroundImage: (avatarUrl != null && avatarUrl.isNotEmpty)
+                ? NetworkImage(avatarUrl)
+                : null,
+            child: (avatarUrl == null || avatarUrl.isEmpty)
+                ? Icon(
+                    icon ?? Icons.person,
+                    color: iconColor ?? colorScheme.primary,
+                  )
+                : null,
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -937,6 +1401,22 @@ class _RideDetailScreenState extends State<RideDetailScreen>
               ],
             ),
           ),
+          if (trailing != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: colorScheme.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                trailing,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: colorScheme.primary,
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -946,432 +1426,471 @@ class _RideDetailScreenState extends State<RideDetailScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Detalle del viaje')),
-      body: FutureBuilder<Map<String, dynamic>>(
-        future: _detailFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting)
-            return const Center(child: CircularProgressIndicator());
-          if (snapshot.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.error_outline,
-                      size: 52,
-                      color: Colors.red.shade400,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'No se pudo cargar el detalle del viaje.',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${snapshot.error}',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: _reload,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Reintentar'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-          final detail = snapshot.data ?? widget.initialRide;
-          final state = normalizeRideState(detail['estado']);
-          final colorScheme = Theme.of(context).colorScheme;
-          final statusColor = _statusColor(state, colorScheme);
-          final clientName = _buildClientName(detail);
-          final estimatedDuration = _formatMinutes(detail['duracion']);
-          final actualDuration = _formatActualDuration(detail);
-          final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
-          final isPaid = _isRidePaid(detail);
-          final isFinalized = state == 'finalizada';
-          return SingleChildScrollView(
-            padding: EdgeInsets.fromLTRB(
-              16,
-              16,
-              16,
-              MediaQuery.of(context).padding.bottom + 24,
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _errorMessage != null
+          ? _buildErrorView()
+          : _ride == null
+          ? const Center(child: Text('Sin datos'))
+          : _buildRideContent(),
+    );
+  }
+
+  Widget _buildErrorView() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline, size: 52, color: Colors.red.shade400),
+            const SizedBox(height: 12),
+            Text(
+              'No se pudo cargar el detalle del viaje.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleMedium,
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            const SizedBox(height: 8),
+            Text(
+              _errorMessage!,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _fetchInitialRide,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Reintentar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRideContent() {
+    final detail = _ride!;
+    final state = normalizeRideState(detail['estado']);
+    final colorScheme = Theme.of(context).colorScheme;
+    final statusColor = _statusColor(state, colorScheme);
+    final clientName = _buildClientName(detail);
+    final estimatedDuration = _formatMinutes(detail['duracion']);
+    final actualDuration = _formatActualDuration(detail);
+    final anotaciones = detail['anotaciones']?.toString().trim() ?? '';
+    final isPaid = _isRidePaid(detail);
+    final isFinalized = state == 'finalizada';
+    final displayEtaMinutes = _etaMinutes ?? _estimateEtaMinutes(detail);
+    final displayEtaArrivalAt =
+        _etaArrivalAt ??
+        (displayEtaMinutes != null
+            ? DateTime.now().add(Duration(minutes: displayEtaMinutes))
+            : null);
+    return SingleChildScrollView(
+      padding: EdgeInsets.fromLTRB(
+        16,
+        16,
+        16,
+        MediaQuery.of(context).padding.bottom + 24,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+            ),
+            child: Row(
               children: [
+                Icon(Icons.receipt_long, size: 20, color: statusColor),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Viaje #${widget.rideId.substring(0, 8).toUpperCase()}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
                 Container(
-                  padding: const EdgeInsets.all(14),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
-                    color: colorScheme.surfaceContainerHighest.withValues(
-                      alpha: 0.3,
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: statusColor.withValues(alpha: 0.3),
-                    ),
+                    color: statusColor.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(20),
                   ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.receipt_long, size: 20, color: statusColor),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Viaje #${widget.rideId.substring(0, 8).toUpperCase()}',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: statusColor.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          state.isEmpty ? 'sin estado' : state.toUpperCase(),
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: statusColor,
-                          ),
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    state.isEmpty ? 'sin estado' : state.toUpperCase(),
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: statusColor,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 16),
-                Text(
-                  widget.isDriverView ? 'CLIENTE' : 'TAXISTA',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.primary,
-                    letterSpacing: 1,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                _buildPersonCard(
-                  name: widget.isDriverView
-                      ? clientName
-                      : _buildDriverName(detail),
-                  subtitle: widget.isDriverView
-                      ? detail['cliente_telefono']?.toString()
-                      : _buildVehicleName(detail),
-                  icon: widget.isDriverView ? Icons.person : Icons.local_taxi,
-                  bgColor: colorScheme.primary,
-                  iconColor: colorScheme.primary,
-                ),
-                if (widget.isDriverView && anotaciones.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  _buildInfoTile(
-                    icon: Icons.notes,
-                    label: 'Anotaciones',
-                    value: anotaciones,
-                    padding: 8,
-                    fontSize: 12,
-                  ),
-                ],
-                const SizedBox(height: 20),
-                Text(
-                  'DETALLES DEL VIAJE',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.primary,
-                    letterSpacing: 1,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    _buildCompactChip(
-                      icon: Icons.place,
-                      value: (detail['origen']?.toString() ?? 'Origen')
-                          .split(',')
-                          .first,
-                    ),
-                    _buildCompactChip(
-                      icon: Icons.location_on,
-                      value: (detail['destino']?.toString() ?? 'Destino')
-                          .split(',')
-                          .first,
-                    ),
-                    _buildCompactChip(
-                      icon: Icons.schedule,
-                      value: _formatDate(detail['created_at']),
-                    ),
-                  ],
-                ),
-                if (widget.isDriverView) ...[
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      _buildCompactChip(
-                        icon: Icons.people,
-                        value:
-                            '${detail['num_pasajeros']?.toString() ?? '0'} Pax',
-                      ),
-                      _buildCompactChip(
-                        icon: Icons.timer,
-                        value: estimatedDuration,
-                      ),
-                      if (state == 'finalizada')
-                        _buildCompactChip(
-                          icon: Icons.av_timer,
-                          value: actualDuration,
-                        ),
-                    ],
-                  ),
-                ],
-                const SizedBox(height: 20),
-                Text(
-                  'PAGO',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.primary,
-                    letterSpacing: 1,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _buildInfoTile(
-                        icon: isPaid
-                            ? Icons.check_circle
-                            : Icons.hourglass_empty,
-                        label: 'Estado',
-                        value: isPaid
-                            ? 'Pagado'
-                            : (isFinalized ? 'Pagado al taxista' : 'Pendiente'),
-                        iconColor: isPaid ? Colors.green : Colors.orange,
-                        padding: 10,
-                        fontSize: 13,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _buildInfoTile(
-                        icon: Icons.payments,
-                        label: 'Total',
-                        value: _formatPrice(detail['precio']),
-                        padding: 10,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
-                ),
-                if (!widget.isDriverView &&
-                    state == 'confirmada' &&
-                    _etaMinutes != null) ...[
-                  const SizedBox(height: 20),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: colorScheme.primary.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: colorScheme.primary.withValues(alpha: 0.3),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.directions_car,
-                          color: colorScheme.primary,
-                          size: 22,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Taxista en camino',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                  color: colorScheme.primary,
-                                ),
-                              ),
-                              Text(
-                                'Llega en ${_buildEtaCountdownText()}',
-                                style: TextStyle(fontSize: 13),
-                              ),
-                              if (_etaDistanceKm != null)
-                                Text(
-                                  '${_etaDistanceKm!.toStringAsFixed(1)} km de distancia',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                if (!widget.isDriverView &&
-                    state == 'confirmada' &&
-                    _etaMinutes == null) ...[
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: colorScheme.primary.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.location_searching,
-                          size: 18,
-                          color: colorScheme.primary,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            'Esperando ubicación...',
-                            style: TextStyle(fontSize: 13),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                if (!widget.isDriverView &&
-                    normalizeRideState(detail['estado']) == 'finalizada' &&
-                    !_isRated) ...[
-                  const SizedBox(height: 24),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: _ratingInProgress
-                          ? null
-                          : () => _showRatingBottomSheet(detail),
-                      icon: _ratingInProgress
-                          ? const SizedBox(
-                              height: 18,
-                              width: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Icon(Icons.rate_review),
-                      label: Text(
-                        _ratingInProgress ? 'Enviando...' : 'Valorar viaje',
-                      ),
-                      style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                    ),
-                  ),
-                ],
-                if (!widget.isDriverView &&
-                    normalizeRideState(detail['estado']) == 'finalizada' &&
-                    _isRated) ...[
-                  const SizedBox(height: 20),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.green.shade50,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.green.shade200),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.check_circle,
-                          color: Colors.green.shade600,
-                          size: 18,
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          'Valoración enviada',
-                          style: TextStyle(
-                            color: Colors.green.shade700,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                if (!widget.isDriverView &&
-                    normalizeRideState(detail['estado']) == 'pendiente') ...[
-                  const SizedBox(height: 24),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: _isCancelling
-                          ? null
-                          : () => _confirmAndCancelRide(detail),
-                      icon: _isCancelling
-                          ? const SizedBox(
-                              height: 18,
-                              width: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.cancel),
-                      label: Text(_isCancelling ? 'Cancelando...' : 'Cancelar'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: colorScheme.error,
-                        side: BorderSide(color: colorScheme.error),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                    ),
-                  ),
-                ],
-                if (!widget.isDriverView && state == 'en_curso' && !isPaid) ...[
-                  const SizedBox(height: 24),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                      onPressed: _isPaying ? null : () => _payRide(detail),
-                      icon: _isPaying
-                          ? const SizedBox(
-                              height: 18,
-                              width: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Icon(Icons.payment),
-                      label: Text(_isPaying ? 'Procesando...' : 'Pagar ahora'),
-                      style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                      ),
-                    ),
-                  ),
-                ],
               ],
             ),
-          );
-        },
+          ),
+          const SizedBox(height: 16),
+          // Map showing driver location only for confirmed rides
+          if (shouldShowRideMap(state)) ...[
+            _buildRideMap(state, colorScheme, detail),
+            const SizedBox(height: 16),
+          ],
+          Text(
+            widget.isDriverView ? 'CLIENTE' : 'TAXISTA',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: colorScheme.primary,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 8),
+          _buildPersonCard(
+            context: context,
+            name: widget.isDriverView ? clientName : _buildDriverName(detail),
+            subtitle: widget.isDriverView
+                ? detail['cliente_telefono']?.toString()
+                : _buildVehicleName(detail),
+            icon: widget.isDriverView ? Icons.person : Icons.local_taxi,
+            bgColor: colorScheme.primary,
+            iconColor: colorScheme.primary,
+          ),
+          if (widget.isDriverView && anotaciones.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _buildInfoTile(
+              icon: Icons.notes,
+              label: 'Anotaciones',
+              value: anotaciones,
+              padding: 8,
+              fontSize: 12,
+            ),
+          ],
+          if (widget.isDriverView &&
+              state == 'confirmada' &&
+              displayEtaMinutes != null) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.navigation, color: Colors.orange, size: 22),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Tiempo restante',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: Colors.orange,
+                          ),
+                        ),
+                        Text(
+                          'Llegada en ${_buildEtaCountdownText(displayEtaArrivalAt)}',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 20),
+          Text(
+            'DETALLES DEL VIAJE',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: colorScheme.primary,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildCompactChip(
+                icon: Icons.place,
+                value: (detail['origen']?.toString() ?? 'Origen')
+                    .split(',')
+                    .first,
+              ),
+              _buildCompactChip(
+                icon: Icons.location_on,
+                value: (detail['destino']?.toString() ?? 'Destino')
+                    .split(',')
+                    .first,
+              ),
+              _buildCompactChip(
+                icon: Icons.schedule,
+                value: _formatDate(detail['created_at']),
+              ),
+            ],
+          ),
+          if (widget.isDriverView) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildCompactChip(
+                  icon: Icons.people,
+                  value: '${detail['num_pasajeros']?.toString() ?? '0'} Pax',
+                ),
+                _buildCompactChip(icon: Icons.timer, value: estimatedDuration),
+                if (state == 'finalizada')
+                  _buildCompactChip(
+                    icon: Icons.av_timer,
+                    value: actualDuration,
+                  ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 20),
+          Text(
+            'PAGO',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: colorScheme.primary,
+              letterSpacing: 1,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: _buildInfoTile(
+                  icon: isPaid ? Icons.check_circle : Icons.hourglass_empty,
+                  label: 'Estado',
+                  value: isPaid
+                      ? 'Pagado'
+                      : (isFinalized ? 'Pagado al taxista' : 'Pendiente'),
+                  iconColor: isPaid ? Colors.green : Colors.orange,
+                  padding: 10,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildInfoTile(
+                  icon: Icons.payments,
+                  label: 'Total',
+                  value: _formatPrice(detail['precio']),
+                  padding: 10,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+          if (!widget.isDriverView &&
+              state == 'confirmada' &&
+              displayEtaMinutes != null) ...[
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: colorScheme.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: colorScheme.primary.withValues(alpha: 0.3),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.directions_car,
+                    color: colorScheme.primary,
+                    size: 22,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Taxista en camino',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: colorScheme.primary,
+                          ),
+                        ),
+                        Text(
+                          'Llega en ${_buildEtaCountdownText(displayEtaArrivalAt)}',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (!widget.isDriverView &&
+              state == 'confirmada' &&
+              displayEtaMinutes == null) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: colorScheme.primary.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.location_searching,
+                    size: 18,
+                    color: colorScheme.primary,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Esperando ubicación...',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (!widget.isDriverView &&
+              normalizeRideState(detail['estado']) == 'finalizada' &&
+              !_isRated) ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _ratingInProgress
+                    ? null
+                    : () => _showRatingBottomSheet(detail),
+                icon: _ratingInProgress
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.rate_review),
+                label: Text(
+                  _ratingInProgress ? 'Enviando...' : 'Valorar viaje',
+                ),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+            ),
+          ],
+          if (!widget.isDriverView &&
+              normalizeRideState(detail['estado']) == 'finalizada' &&
+              _isRated) ...[
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.green.shade50,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.green.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.check_circle,
+                    color: Colors.green.shade600,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Valoración enviada',
+                    style: TextStyle(
+                      color: Colors.green.shade700,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (!widget.isDriverView &&
+              normalizeRideState(detail['estado']) == 'pendiente') ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _isCancelling
+                    ? null
+                    : () => _confirmAndCancelRide(detail),
+                icon: _isCancelling
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cancel),
+                label: Text(_isCancelling ? 'Cancelando...' : 'Cancelar'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: colorScheme.error,
+                  side: BorderSide(color: colorScheme.error),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+            ),
+          ],
+          if (!widget.isDriverView && state == 'en_curso' && !isPaid) ...[
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed:
+                    shouldEnableRidePaymentButton(
+                      isDriverView: widget.isDriverView,
+                      isPaying: _isPaying,
+                      waitingStripeReturn: _waitingStripeReturn,
+                      isPaid: isPaid,
+                      rideState: state,
+                    )
+                    ? () => _payRide(detail)
+                    : null,
+                icon: (_isPaying || _waitingStripeReturn)
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.payment),
+                label: Text(
+                  _waitingStripeReturn
+                      ? 'Esperando Stripe...'
+                      : (_isPaying ? 'Procesando...' : 'Pagar ahora'),
+                ),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

@@ -121,9 +121,10 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
   void _startDashboardPolling() {
     _dashboardPollingTimer?.cancel();
-    _dashboardPollingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
-      unawaited(_loadDashboard(showLoader: false));
+    _dashboardPollingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (mounted && !_dashboardLoadInFlight) {
+        unawaited(_loadDashboard(showLoader: false));
+      }
     });
   }
 
@@ -182,6 +183,12 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
   void _syncLocationTracking(Map<String, dynamic>? activeRide) {
     if (_shouldTrackLocation(activeRide)) {
+      // Activar ubicación automáticamente si no está activa
+      if (!_locationSharingEnabled) {
+        _autoEnableLocationSharing();
+        return;
+      }
+
       _locationUpdateTimer ??= Timer.periodic(const Duration(seconds: 15), (
         _,
       ) async {
@@ -203,6 +210,39 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
     _locationUpdateTimer?.cancel();
     _locationUpdateTimer = null;
+  }
+
+  Future<void> _autoEnableLocationSharing() async {
+    if (_sharingLocationInProgress) return;
+    if (!mounted) return;
+
+    setState(() {
+      _sharingLocationInProgress = true;
+    });
+
+    try {
+      final canUseLocation = await _ensureLocationPermission(
+        showSettingsOnDeniedForever: true,
+      );
+      if (!canUseLocation) return;
+
+      final published = await _pushCurrentLocation(notifyOnError: true);
+      if (!published) return;
+
+      if (!mounted) return;
+      setState(() {
+        _locationSharingEnabled = true;
+      });
+
+      _syncLocationTracking(_dashboardData?.viajeActivo);
+    } catch (_) {
+    } finally {
+      if (mounted) {
+        setState(() {
+          _sharingLocationInProgress = false;
+        });
+      }
+    }
   }
 
   Future<bool> _pushCurrentLocation({bool notifyOnError = false}) async {
@@ -298,7 +338,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
 
       if (!mounted) return;
       _showMessage(
-        'Ubicación compartida activada. El cliente ya puede ver su ubicación.',
+        'Ubicación activada. El cliente ve el tiempo estimado de llegada.',
         isError: false,
       );
     } finally {
@@ -635,18 +675,7 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
                     );
                   },
                   icon: const Icon(Icons.local_taxi),
-                  label: const Text('Viajes activos'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const RideHistoryScreen(initialTab: 1),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.history),
-                  label: const Text('Historial'),
+                  label: const Text('Historial de viajes'),
                 ),
               ],
             ),
@@ -781,18 +810,6 @@ class _DriverDashboardTabState extends State<DriverDashboardTab>
                     ),
                   ),
                 if (estado == 'confirmada') const SizedBox(width: 8),
-                if (estado == 'confirmada' && !_locationSharingEnabled)
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed:
-                          (rideId.isEmpty || _processingRideAction || isBusy)
-                          ? null
-                          : () => _shareLocationForRide(rideId),
-                      child: const Text('Compartir ubicación'),
-                    ),
-                  ),
-                if (estado == 'confirmada' && !_locationSharingEnabled)
-                  const SizedBox(width: 8),
                 if (estado == 'pendiente')
                   Expanded(
                     child: OutlinedButton(

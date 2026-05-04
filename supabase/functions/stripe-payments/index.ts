@@ -3,6 +3,8 @@ import Stripe from 'npm:stripe@16.12.0';
 
 const STRIPE_SECRET_KEY = Deno.env.get('STRIPE_SECRET_KEY');
 const STRIPE_WEBHOOK_SECRET = Deno.env.get('STRIPE_WEBHOOK_SECRET');
+const ONESIGNAL_API_KEY = Deno.env.get('ONESIGNAL_REST_API_KEY') ?? Deno.env.get('ONESIGNAL_API_KEY');
+const ONESIGNAL_APP_ID = Deno.env.get('ONESIGNAL_APP_ID');
 const APP_DEEPLINK_BASE = (Deno.env.get('APP_DEEPLINK_BASE') ?? 'gotaxi://stripe').replace(/\/$/, '');
 
 const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -322,9 +324,10 @@ async function syncSavedPaymentMethodsFromStripe(userId: string) {
 }
 
 async function markRidePaid(rideId: string, paymentIntentId: string, paymentStatus: string) {
+  // First, check if ride exists and is not already paid
   const { data: ride, error } = await supabase
     .from('viajes')
-    .select('estado')
+    .select('estado, pagado, stripe_payment_intent_id')
     .eq('id', rideId)
     .maybeSingle();
 
@@ -336,6 +339,22 @@ async function markRidePaid(rideId: string, paymentIntentId: string, paymentStat
     throw new Error('Viaje no encontrado');
   }
 
+  // Prevent double-payment: only mark as paid if not already paid
+  if (ride.pagado === true) {
+    console.log('Ride already paid, skipping...');
+    return;
+  }
+
+  // Verify payment status is valid
+  if (paymentStatus !== 'succeeded') {
+    throw new Error(`Invalid payment status: ${paymentStatus}`);
+  }
+
+  // Verify this paymentIntentId matches the one in the ride
+  if (ride.stripe_payment_intent_id && ride.stripe_payment_intent_id !== paymentIntentId) {
+    console.warn('PaymentIntent ID mismatch, but proceeding with new ID');
+  }
+
   await supabase.rpc('upsert_ride_payment_state', {
     p_viaje_id: rideId,
     p_stripe_payment_intent_id: paymentIntentId,
@@ -343,6 +362,9 @@ async function markRidePaid(rideId: string, paymentIntentId: string, paymentStat
     p_pagado: true,
     p_paid_at: new Date().toISOString(),
   });
+
+  // Send notification for successful payment
+  await sendRidePaymentNotification(rideId, true);
 }
 
 async function syncRidePaymentFromStripe(userId: string, rideId: string) {
@@ -373,12 +395,41 @@ async function syncRidePaymentFromStripe(userId: string, rideId: string) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
     const paymentStatus = paymentIntent.status;
 
-    const shouldMarkPaid = paymentStatus === 'succeeded';
+    // Only mark as paid if status is 'succeeded' AND ride is not already paid
+    const shouldMarkPaid = paymentStatus === 'succeeded' && ride.pagado !== true;
 
-    if (shouldMarkPaid && ride.pagado !== true) {
+    if (shouldMarkPaid) {
+      // Double-check: verify this paymentIntent belongs to this ride
+      const piRideId = paymentIntent.metadata?.ride_id ?? '';
+      const piUserId = paymentIntent.metadata?.user_id ?? '';
+      
+      if (piRideId !== rideId) {
+        throw new Error('PaymentIntent does not belong to this ride');
+      }
+      
+      if (piUserId !== userId) {
+        throw new Error('PaymentIntent does not belong to this user');
+      }
+
       await markRidePaid(rideId, paymentIntent.id, paymentStatus);
       return { synced: true, paid: true, paymentStatus };
     }
+
+    // Update payment status if changed
+    if (ride.stripe_payment_status !== paymentStatus) {
+      await supabase
+        .from('viajes')
+        .update({ stripe_payment_status: paymentStatus })
+        .eq('id', rideId);
+    }
+
+    // Send failed payment notification if payment failed
+    if (paymentStatus === 'canceled' || paymentStatus === 'failed') {
+      await sendRidePaymentNotification(rideId, false);
+    }
+
+    return { synced: true, paid: ride.pagado === true, paymentStatus };
+  }
 
     if (ride.stripe_payment_status !== paymentStatus) {
       await supabase
@@ -387,6 +438,11 @@ async function syncRidePaymentFromStripe(userId: string, rideId: string) {
           stripe_payment_status: paymentStatus,
         })
         .eq('id', rideId);
+    }
+
+    // Send failed payment notification if payment failed
+    if (!shouldMarkPaid && paymentStatus === 'canceled') {
+      await sendRidePaymentNotification(rideId, false);
     }
 
     return { synced: true, paid: ride.pagado === true || shouldMarkPaid, paymentStatus };
@@ -477,13 +533,29 @@ async function syncRidePaymentFromCheckoutSession(
 
   const paymentStatus = session.payment_status ?? '';
 
+  // Only mark as paid if payment_status is 'paid' AND paymentIntent is 'succeeded'
   if (paymentStatus === 'paid' && paymentIntentId) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    
+    // Strict validation: only succeeded status should mark as paid
     if (paymentIntent.status === 'succeeded') {
+      // Double-check: make sure this paymentIntent belongs to this ride
+      const piRideId = paymentIntent.metadata?.ride_id ?? '';
+      const piUserId = paymentIntent.metadata?.user_id ?? '';
+      
+      if (piRideId !== rideId) {
+        throw new Error('PaymentIntent does not belong to this ride');
+      }
+      
+      if (piUserId !== userId) {
+        throw new Error('PaymentIntent does not belong to this user');
+      }
+      
       await markRidePaid(rideId, paymentIntent.id, paymentIntent.status);
       return { synced: true, paid: true, paymentStatus: paymentIntent.status };
     }
 
+    // Payment not succeeded - update status but don't mark as paid
     await supabase
       .from('viajes')
       .update({ stripe_payment_status: paymentIntent.status })
@@ -494,7 +566,21 @@ async function syncRidePaymentFromCheckoutSession(
 
   if (paymentIntentId) {
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    
+    // Only mark as paid if status is succeeded
     if (paymentIntent.status === 'succeeded') {
+      // Double-check: make sure this paymentIntent belongs to this ride
+      const piRideId = paymentIntent.metadata?.ride_id ?? '';
+      const piUserId = paymentIntent.metadata?.user_id ?? '';
+      
+      if (piRideId !== rideId) {
+        throw new Error('PaymentIntent does not belong to this ride');
+      }
+      
+      if (piUserId !== userId) {
+        throw new Error('PaymentIntent does not belong to this user');
+      }
+      
       await markRidePaid(rideId, paymentIntent.id, paymentIntent.status);
       return { synced: true, paid: true, paymentStatus: paymentIntent.status };
     }
@@ -508,6 +594,79 @@ async function syncRidePaymentFromCheckoutSession(
   }
 
   return { synced: true, paid: false, paymentStatus };
+}
+
+async function sendRidePaymentNotification(rideId: string, paid: boolean) {
+  if (!ONESIGNAL_API_KEY || !ONESIGNAL_APP_ID) {
+    console.log('OneSignal not configured, skipping push notification');
+    return;
+  }
+
+  try {
+    const { data: ride, error } = await supabase
+      .from('viajes')
+      .select('user_id, driver_id, precio')
+      .eq('id', rideId)
+      .maybeSingle();
+
+    if (error || !ride) {
+      console.error('Error fetching ride for notification:', error);
+      return;
+    }
+
+    const onesignalPayload = (userId: string, title: string, body: string, tipo: string) => ({
+      app_id: ONESIGNAL_APP_ID,
+      headings: { en: title },
+      contents: { en: body },
+      data: { viaje_id: rideId, tipo },
+      ...(ride.user_id === userId
+        ? { include_aliases: { external_id: [userId] }, target_channel: 'push' }
+        : { include_aliases: { external_id: [userId] }, target_channel: 'push' }),
+    });
+
+    const notifications = [];
+
+    if (paid) {
+      // Notify client - payment successful
+      notifications.push({
+        ...onesignalPayload(ride.user_id, 'Pago confirmado', 'Gracias por tu pago. El taxista ha sido notificado.', 'pago_exitoso'),
+      });
+
+      // Notify driver - payment received
+      if (ride.driver_id) {
+        notifications.push({
+          ...onesignalPayload(ride.driver_id, 'Viaje pagado', `El cliente ha pagado ${(ride.precio ?? 0).toFixed(2)}€ del viaje.`, 'pago_recibido'),
+        });
+      }
+    } else {
+      // Notify client - payment failed
+      notifications.push({
+        ...onesignalPayload(ride.user_id, 'Pago fallido', 'Hubo un problema con tu pago. Por favor, inténtalo de nuevo.', 'pago_fallido'),
+      });
+    }
+
+    for (const notification of notifications) {
+      try {
+        const response = await fetch('https://api.onesignal.com/notifications?c=push', {
+          method: 'POST',
+          headers: {
+            'Authorization': `key ${ONESIGNAL_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(notification),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('OneSignal notification error:', errorText);
+        }
+      } catch (err) {
+        console.error('Error sending OneSignal notification:', err);
+      }
+    }
+  } catch (err) {
+    console.error('Error in sendRidePaymentNotification:', err);
+  }
 }
 
 Deno.serve(async (req) => {
